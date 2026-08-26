@@ -333,7 +333,7 @@ teamhub/
 | Không `SELECT *` | Liệt kê cột cần. Tránh lấy thừa dữ liệu nhạy cảm. |
 | **Parameterized query** | Supabase client tự động. Không nối string SQL. |
 | **RLS mọi bảng** | Bảng nào cũng phải có Row-Level Security (RLS) policy. |
-| **Soft delete / Append-only** | Không `DELETE` data quan trọng. Dùng `deleted_at` hoặc status. Audit log append-only. |
+| **Soft delete / Append-only** | Không `DELETE` data quan trọng. Dùng `deleted_at` hoặc status. Audit log append-only. **Ngoại lệ duy nhất (26/08/2026):** xóa `checkins.status='PENDING_REVIEW'` khi REJECT theo phase1 §4.6 — bắt buộc ghi `event_timelines` trước khi xóa. |
 | **Atomic RPC (Remote Procedure Call) ** | Nhiều thao tác dữ liệu liên quan → RPC function với transaction, gom lại chạy trong một transaction (giao dịch) duy nhất. |
 
 ### 4.5 Error Handling
@@ -380,6 +380,7 @@ supabase db push
 | **Không sửa migration đã apply** | Đã apply production → tạo migration mới để ALTER. |
 | **Idempotent** | Chạy 2 lần không lỗi. Dùng `IF NOT EXISTS`, `CREATE OR REPLACE`. |
 | **Không DROP data** | Không `DROP TABLE` có data. Dùng `ALTER` hoặc soft delete. |
+| **Business RPC = SECURITY DEFINER** | RPC ghi dữ liệu nhạy cảm bắt buộc `SECURITY DEFINER SET search_path = public` + kiểm tra role bên trong hàm (`auth_has_role()`). Client ghi trực tiếp vào bảng nhạy cảm bị RLS deny. Webhook/cron chạy bằng `service_role` (bypass RLS hợp lệ). |
 
 ### 5.3 RLS Policy template
 
@@ -392,10 +393,10 @@ CREATE POLICY "User view own data"
 ON table_name FOR SELECT
 USING (auth.uid() = user_id);
 
--- Manager xem team
+-- Manager xem team (JWT claim chuẩn là mảng roles[] — KHÔNG dùng claim số ít role)
 CREATE POLICY "Manager view team"
 ON table_name FOR SELECT
-USING (auth.jwt() ->> 'role' = 'manager');
+USING (auth_has_role('manager'));
 
 -- Multi-role check (Phase 5)
 CREATE POLICY "Accountant or Manager"
@@ -408,6 +409,10 @@ ON table_name FOR ALL
 USING (auth.jwt() -> 'roles' ? 'admin');
 ```
 
+> **JWT claim chuẩn của dự án (26/08/2026): mảng `roles[]`** — ví dụ `{"roles": ["manager", "accountant"]}`. KHÔNG viết policy mới dùng claim số ít `role`. Helper chuẩn: `auth_has_role('<role>')` (định nghĩa trong `001_initial_schema.sql`, đọc claim `roles[]`).
+>
+> **Write model:** bảng tiền/audit/lịch sử không có policy INSERT/UPDATE cho client — mọi ghi đi qua RPC SECURITY DEFINER có role-guard bên trong, hoặc service_role (webhook/cron).
+
 ### 5.4 RPC Function template 
 
 ```sql
@@ -418,10 +423,17 @@ CREATE OR REPLACE FUNCTION action_entity(
 )
 RETURNS JSONB
 LANGUAGE plpgsql
+SECURITY DEFINER          -- bắt buộc với RPC ghi dữ liệu nhạy cảm
+SET search_path = public  -- chống search_path hijack
 AS $$
 DECLARE
   v_entity RECORD;
 BEGIN
+  -- 0. Authorization (bắt buộc — client không được bypass)
+  IF NOT (auth_has_role('manager') OR auth_has_role('admin')) THEN
+    RETURN jsonb_build_object('success', false, 'error', 'Forbidden');
+  END IF;
+
   -- 1. Validate input
   IF p_reason IS NOT NULL AND LENGTH(TRIM(p_reason)) < 10 THEN
     RETURN jsonb_build_object('success', false, 'error', 'Reason too short');

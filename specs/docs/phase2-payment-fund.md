@@ -32,7 +32,9 @@
 
 ---
 
-#### 1.2 `penalty_tickets` (đã có từ Phase 1, mở rộng thêm cột)
+#### 1.2 `penalty_tickets` (được tạo từ Phase 1 luồng penalty — DDL đầy đủ trong migration mục 2.2)
+
+> **Đồng bộ (26/08/2026):** bảng phạt canonical duy nhất là `penalty_tickets` (bảng `penalties` legacy đã xóa). Vì `transaction_id` là NOT NULL UNIQUE, transaction_id được sinh ngay lúc tạo phiếu (8 ký tự A-Z0-9), không chờ đến lúc bấm "Thanh toán".
 
 | Column | Type | Constraints | Description |
 |--------|------|-------------|-------------|
@@ -504,7 +506,7 @@ Deno.serve(async (req) => {
       content: content,
       amount: data.transferAmount,
       received_at: new Date().toISOString(),
-      reason: 'TICKET_NOT_FOUND_OR_PAID',
+      reason: 'TICKET_ALREADY_PAID',
     });
     return Response.json({ success: true, note: 'Ticket not found or already paid' });
   }
@@ -736,7 +738,7 @@ $$;
 | **P2-16** | Duplicate webhook (dedup) | Gửi lại cùng sepay_id | `{"success": true}`, DB không thay đổi lần 2 |
 | **P2-17** | Không tìm thấy transaction_id trong content | content = "CHUYEN TIEN" | Lưu unmatched, reason = `NO_TRANSACTION_ID` |
 | **P2-18** | Transaction ID không tồn tại | tx_id = "ZZZZZZZZ" | Lưu unmatched, reason = `TICKET_NOT_FOUND` |
-| **P2-19** | Phiếu đã PAID | Gửi webhook cho phiếu đã PAID | Lưu unmatched, reason = `TICKET_NOT_FOUND_OR_PAID` |
+| **P2-19** | Phiếu đã PAID | Gửi webhook cho phiếu đã PAID | Lưu unmatched, reason = `TICKET_ALREADY_PAID` |
 | **P2-20** | Số tiền không khớp | Phiếu 20k, chuyển 15k | Lưu unmatched, reason = `AMOUNT_MISMATCH` |
 | **P2-21** | Test payload (id=0) | `{"id": 0, ...}` | `{"success": true}`, không verify HMAC |
 | **P2-22** | Webhook tiền ra (`transferType: 'out'`) | Bị lọc bởi Sepay dashboard, nhưng nếu về | Bỏ qua, không xử lý (hoặc log rồi return success) |
@@ -850,15 +852,12 @@ LIMIT 50 OFFSET 0;
 #### 1.4 RLS Policy
 
 ```sql
--- Manager xem tất cả
-CREATE POLICY "Manager can view all penalty tickets"
+-- Manager xem tất cả (JWT claim chuẩn là mảng roles[] — dùng helper auth_has_role)
+CREATE POLICY "Penalty tickets user own"
 ON penalty_tickets FOR SELECT
-USING (auth.jwt() ->> 'role' = 'manager');
+USING (user_id = auth.uid() OR auth_has_role('manager') OR auth_has_role('admin'));
 
--- User chỉ xem của mình
-CREATE POLICY "User can view own penalty tickets"
-ON penalty_tickets FOR SELECT
-USING (auth.uid() = user_id);
+-- User chỉ xem của mình (gộp vào policy trên — khớp 001)
 ```
 
 ---
@@ -1328,7 +1327,7 @@ Audit Trail (Admin Panel)
 |--------|------|-------------|-------------|
 | `id` | UUID | PK | |
 | `type` | VARCHAR(20) | NOT NULL | `INCOME` / `EXPENSE` |
-| `source` | VARCHAR(50) | NOT NULL | `PENALTY` (Sepay) / `PENALTY_CASH` (tiền mặt) / `MANUAL` / `WITHDRAW` |
+| `source` | VARCHAR(50) | NOT NULL | `PENALTY` (Sepay) / `PENALTY_CASH` (tiền mặt) / `MANUAL_DEPOSIT` / `WITHDRAW` / `REFUND` / `MATCH_ADJUST` — khớp CHECK constraint trong 001 |
 | `amount` | BIGINT | NOT NULL | Đơn vị VNĐ, luôn dương |
 | `ticket_id` | UUID | FK → penalty_tickets, nullable | Liên kết phiếu phạt |
 | `branch` | VARCHAR(10) | nullable | `HN`, `HCM`, `DN` — từ `subAccount` hoặc `branch_code` |
@@ -1430,15 +1429,14 @@ LIMIT 50 OFFSET 0;
 #### 2.4 RLS Policy
 
 ```sql
--- Chỉ manager và admin được xem quỹ
-CREATE POLICY "Manager can view fund transactions"
+-- Accountant / Manager / Admin được xem quỹ (khớp policy "Fund transactions accountant" trong 001)
+CREATE POLICY "Fund transactions accountant"
 ON fund_transactions FOR SELECT
-USING (auth.jwt() ->> 'role' IN ('manager', 'admin'));
+USING (auth_has_role('accountant') OR auth_has_role('manager') OR auth_has_role('admin'));
 
--- User thường KHÔNG được xem
-CREATE POLICY "User cannot view fund"
-ON fund_transactions FOR SELECT
-USING (false);
+-- Staff/anon KHÔNG có policy nào → RLS tự chặn, không cần policy USING(false)
+-- Ghi vào fund_transactions chỉ qua RPC SECURITY DEFINER (process_payment,
+-- cash_payment, manual_deposit, ...) hoặc service_role — client write bị deny.
 ```
 
 > **Hint thay thế:** Nếu dùng Node.js/Express: middleware `requireRole(['manager', 'admin'])` trước khi query. Nếu dùng Firebase: dùng Firestore security rules `allow read: if request.auth.token.role in ['manager', 'admin']`.

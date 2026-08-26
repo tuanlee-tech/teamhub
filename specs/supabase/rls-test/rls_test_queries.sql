@@ -2,6 +2,21 @@
 -- RLS TEST QUERIES — PWA Check-in GPS (Phase 1-5)
 -- Chạy trong Supabase SQL Editor hoặc psql sau khi apply migration
 -- Mục đích: Verify tất cả RLS policies hoạt động đúng với từng role
+--
+-- ⚠️ EXECUTION CONTEXT (đọc trước khi chạy):
+--   Chạy bằng superuser/postgres/service_role sẽ BYPASS hoàn toàn RLS
+--   → mọi "Expected: N" bên dưới sẽ SAI. set_auth_context() chỉ giả lập
+--   JWT claims, KHÔNG cấp quyền vượt RLS.
+--   Cách chạy đúng:
+--     A) Khuyến nghị: gọi qua Supabase REST (PostgREST) với JWT của role
+--        tương ứng (anon key + user token) — PostgREST luôn chạy dưới
+--        role `authenticated`/`anon` nên RLS có hiệu lực.
+--     B) psql: tạo login role KHÁC owner và GRANT SELECT/INSERT/UPDATE
+--        trên các bảng, ví dụ:
+--          CREATE ROLE rls_probe LOGIN PASSWORD '...';
+--          GRANT USAGE ON SCHEMA public TO rls_probe;
+--          GRANT SELECT, INSERT, UPDATE ON ALL TABLES IN SCHEMA public TO rls_probe;
+--        rồi: psql -U rls_probe -d postgres -f rls_test_queries.sql
 -- ============================================================
 
 -- ============================================================
@@ -34,7 +49,6 @@ DECLARE
     v_tablet_id UUID;
     v_setting_id UUID;
     v_payment_id UUID;
-    v_penalty_legacy_id UUID;
 BEGIN
     -- Cleanup old test data if exists
     DELETE FROM login_attempts WHERE id = v_login_id;
@@ -54,7 +68,6 @@ BEGIN
     DELETE FROM penalty_tickets WHERE user_id = v_staff_id;
     DELETE FROM payment_settings WHERE id = v_payment_id;
     DELETE FROM settings WHERE id = v_setting_id;
-    DELETE FROM penalties WHERE user_id = v_staff_id;
     DELETE FROM tablet_tokens WHERE id = v_tablet_id;
     DELETE FROM checkins WHERE user_id = v_staff_id;
     DELETE FROM office_locations WHERE id = v_office_id;
@@ -105,11 +118,6 @@ BEGIN
     INSERT INTO penalty_tickets (id, user_id, transaction_id, amount, status, type, reason)
     VALUES (gen_random_uuid(), v_staff_id, 'A1B2C3D4', 20000, 'UNPAID', 'LATE_CHECKIN', 'Di tre')
     RETURNING id INTO v_ticket_id;
-
-    -- Insert legacy penalty
-    INSERT INTO penalties (id, user_id, checkin_id, type, amount, status)
-    VALUES (gen_random_uuid(), v_staff_id, v_checkin_id, 'LATE', 20000, 'PENDING')
-    RETURNING id INTO v_penalty_legacy_id;
 
     -- Insert fund transaction
     INSERT INTO fund_transactions (id, type, source, amount, description, created_by)
@@ -315,22 +323,7 @@ SELECT 'STAFF SELECT fraud_rules' as test, COUNT(*) as row_count FROM fraud_rule
 -- Expected: 0 (no seed, but policy allows) — if empty that's fine
 
 -- ============================================================
--- 8. TEST: penalties (legacy)
--- ============================================================
-\echo '=== TEST: penalties ==='
-
--- STAFF: see own
-SELECT set_auth_context('11111111-1111-1111-1111-111111111111', ARRAY['staff']);
-SELECT 'STAFF SELECT penalties' as test, COUNT(*) as row_count FROM penalties;
--- Expected: 1
-
--- MANAGER: see all
-SELECT set_auth_context('22222222-2222-2222-2222-222222222222', ARRAY['manager']);
-SELECT 'MANAGER SELECT penalties' as test, COUNT(*) as row_count FROM penalties;
--- Expected: 1
-
--- ============================================================
--- 9. TEST: settings
+-- 8. TEST: settings
 -- ============================================================
 \echo '=== TEST: settings ==='
 
@@ -345,7 +338,7 @@ SELECT 'MANAGER SELECT settings' as test, COUNT(*) as row_count FROM settings;
 -- Expected: >= 1
 
 -- ============================================================
--- 10. TEST: payment_settings
+-- 9. TEST: payment_settings
 -- ============================================================
 \echo '=== TEST: payment_settings ==='
 
@@ -365,7 +358,7 @@ SELECT 'ACCOUNTANT SELECT payment_settings' as test, COUNT(*) as row_count FROM 
 -- Expected: 0
 
 -- ============================================================
--- 11. TEST: penalty_tickets
+-- 10. TEST: penalty_tickets
 -- ============================================================
 \echo '=== TEST: penalty_tickets ==='
 
@@ -385,7 +378,7 @@ SELECT 'MANAGER SELECT penalty_tickets' as test, COUNT(*) as row_count FROM pena
 -- Expected: 1
 
 -- ============================================================
--- 12. TEST: fund_transactions
+-- 11. TEST: fund_transactions
 -- ============================================================
 \echo '=== TEST: fund_transactions ==='
 
@@ -410,7 +403,7 @@ SELECT 'HR SELECT fund_transactions' as test, COUNT(*) as row_count FROM fund_tr
 -- Expected: 0
 
 -- ============================================================
--- 13. TEST: sepay_webhook_logs
+-- 12. TEST: sepay_webhook_logs
 -- ============================================================
 \echo '=== TEST: sepay_webhook_logs ==='
 
@@ -430,7 +423,7 @@ SELECT 'MANAGER SELECT sepay_webhook_logs' as test, COUNT(*) as row_count FROM s
 -- Expected: 0
 
 -- ============================================================
--- 14. TEST: unmatched_transactions
+-- 13. TEST: unmatched_transactions
 -- ============================================================
 \echo '=== TEST: unmatched_transactions ==='
 
@@ -450,7 +443,7 @@ SELECT 'MANAGER SELECT unmatched' as test, COUNT(*) as row_count FROM unmatched_
 -- Expected: 1
 
 -- ============================================================
--- 15. TEST: audit_logs
+-- 14. TEST: audit_logs
 -- ============================================================
 \echo '=== TEST: audit_logs ==='
 
@@ -475,7 +468,7 @@ SELECT 'HR SELECT audit_logs' as test, COUNT(*) as row_count FROM audit_logs;
 -- Expected: 1
 
 -- ============================================================
--- 16. TEST: event_timelines
+-- 15. TEST: event_timelines
 -- ============================================================
 \echo '=== TEST: event_timelines ==='
 
@@ -490,7 +483,7 @@ SELECT 'MANAGER SELECT event_timelines' as test, COUNT(*) as row_count FROM even
 -- Expected: 1
 
 -- ============================================================
--- 17. TEST: system_logs & client_logs
+-- 16. TEST: system_logs & client_logs
 -- ============================================================
 \echo '=== TEST: system_logs & client_logs ==='
 
@@ -515,7 +508,7 @@ SELECT 'ADMIN SELECT client_logs' as test, COUNT(*) as row_count FROM client_log
 -- Expected: 1
 
 -- ============================================================
--- 18. TEST: leave_requests
+-- 17. TEST: leave_requests
 -- ============================================================
 \echo '=== TEST: leave_requests ==='
 
@@ -569,7 +562,7 @@ SELECT 'HR SELECT leave_requests' as test, COUNT(*) as row_count FROM leave_requ
 -- Expected: 2
 
 -- ============================================================
--- 19. TEST: leave_quotas
+-- 18. TEST: leave_quotas
 -- ============================================================
 \echo '=== TEST: leave_quotas ==='
 
@@ -584,7 +577,7 @@ SELECT 'MANAGER SELECT leave_quotas' as test, COUNT(*) as row_count FROM leave_q
 -- Expected: 1
 
 -- ============================================================
--- 20. TEST: leave_types_config
+-- 19. TEST: leave_types_config
 -- ============================================================
 \echo '=== TEST: leave_types_config ==='
 
@@ -593,7 +586,7 @@ SELECT 'STAFF SELECT leave_types_config' as test, COUNT(*) as row_count FROM lea
 -- Expected: 6
 
 -- ============================================================
--- 21. TEST: leave_request_comments
+-- 20. TEST: leave_request_comments
 -- ============================================================
 \echo '=== TEST: leave_request_comments ==='
 
@@ -604,7 +597,7 @@ SELECT 'STAFF SELECT leave_comments' as test, COUNT(*) as row_count FROM leave_r
 -- Expected: 0 (no data)
 
 -- ============================================================
--- 22. TEST: withdraw_requests
+-- 21. TEST: withdraw_requests
 -- ============================================================
 \echo '=== TEST: withdraw_requests ==='
 
@@ -624,7 +617,7 @@ SELECT 'MANAGER SELECT withdraw_requests' as test, COUNT(*) as row_count FROM wi
 -- Expected: 1
 
 -- ============================================================
--- 23. TEST: user_roles
+-- 22. TEST: user_roles
 -- ============================================================
 \echo '=== TEST: user_roles ==='
 
@@ -639,7 +632,7 @@ SELECT 'ADMIN SELECT user_roles' as test, COUNT(*) as row_count FROM user_roles;
 -- Expected: 4
 
 -- ============================================================
--- 24. TEST: notifications
+-- 23. TEST: notifications
 -- ============================================================
 \echo '=== TEST: notifications ==='
 
@@ -654,7 +647,7 @@ SELECT 'STAFF SELECT others noti' as test, COUNT(*) as row_count FROM notificati
 -- Expected: 0
 
 -- ============================================================
--- 25. TEST: user_preferences
+-- 24. TEST: user_preferences
 -- ============================================================
 \echo '=== TEST: user_preferences ==='
 
@@ -676,7 +669,7 @@ SELECT 'STAFF UPDATE others pref' as test, COUNT(*) as row_count FROM user_prefe
 -- Expected: 0
 
 -- ============================================================
--- 26. TEST: user_push_tokens
+-- 25. TEST: user_push_tokens
 -- ============================================================
 \echo '=== TEST: user_push_tokens ==='
 
@@ -686,7 +679,7 @@ SELECT 'STAFF SELECT push_tokens' as test, COUNT(*) as row_count FROM user_push_
 -- Expected: 1
 
 -- ============================================================
--- 27. TEST: login_attempts
+-- 26. TEST: login_attempts
 -- ============================================================
 \echo '=== TEST: login_attempts ==='
 
@@ -701,7 +694,7 @@ SELECT 'ADMIN SELECT login_attempts' as test, COUNT(*) as row_count FROM login_a
 -- Expected: 1
 
 -- ============================================================
--- 28. TEST: VIEWS (fund_balance_total, fund_balance_by_branch)
+-- 27. TEST: VIEWS (fund_balance_total, fund_balance_by_branch)
 -- ============================================================
 \echo '=== TEST: fund views ==='
 
@@ -716,7 +709,7 @@ SELECT 'MANAGER SELECT fund_balance_total' as test, total_balance FROM fund_bala
 -- Expected: 1 row with balance >= 0
 
 -- ============================================================
--- 29. TEST: Multi-role user (Manager + Accountant)
+-- 28. TEST: Multi-role user (Manager + Accountant)
 -- ============================================================
 \echo '=== TEST: multi-role ==='
 
@@ -730,7 +723,7 @@ SELECT 'MULTI-ROLE SELECT withdraw' as test, COUNT(*) as row_count FROM withdraw
 -- Expected: >= 1 (manager role grants access)
 
 -- ============================================================
--- 30. TEST: Edge cases & Negative tests
+-- 29. TEST: Edge cases & Negative tests
 -- ============================================================
 \echo '=== TEST: edge cases ==='
 
@@ -760,7 +753,8 @@ BEGIN
     DELETE FROM system_logs WHERE user_id IN (v_staff_id, v_manager_id);
     DELETE FROM audit_logs WHERE actor_id IN (v_staff_id, v_manager_id);
     DELETE FROM unmatched_transactions WHERE sepay_id = 'SEPAY001';
-    DELETE FROM fund_transactions WHERE description = 'Test fund' OR description LIKE 'Test%' OR source = 'MATCH_ADJUST' OR source = 'REFUND';
+    -- Chỉ xóa row do test tạo (description prefix 'Test') — KHÔNG xóa lan data seed
+    DELETE FROM fund_transactions WHERE description LIKE 'Test%';
     DELETE FROM withdraw_requests WHERE reason = 'Test withdraw';
     DELETE FROM leave_request_comments WHERE user_id IN (v_staff_id, v_manager_id);
     DELETE FROM leave_requests WHERE user_id IN (v_staff_id, v_manager_id) OR reason IN ('Test insert', 'Updated reason', 'Updated pending');
@@ -768,7 +762,6 @@ BEGIN
     DELETE FROM penalty_tickets WHERE transaction_id = 'A1B2C3D4';
     DELETE FROM payment_settings WHERE account_number = '1010101010';
     DELETE FROM settings WHERE key = 'test_setting';
-    DELETE FROM penalties WHERE user_id = v_staff_id;
     DELETE FROM tablet_tokens WHERE tablet_id = 'TBL-01';
     DELETE FROM checkins WHERE user_id IN (v_staff_id, v_manager_id);
     DELETE FROM office_locations WHERE name = 'Test Office';

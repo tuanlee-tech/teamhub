@@ -4,20 +4,21 @@
 
 ---
 
-## Tóm tắt schema (25 bảng + 2 views + 15 RPC)
+## Tóm tắt schema (27 bảng + 2 views + 14 RPC)
 
-### Phase 1 — Core Check-in (9 bảng)
+### Phase 1 — Core Check-in (8 bảng)
 | Bảng | Mục đích |
 |------|----------|
-| `users` | Nhân viên + grade (INTERN→DIRECTOR) + multi-role ready |
-| `titles` | Danh hiệu hệ thống (seed 5 cái) |
+| `users` | Nhân viên + grade (INTERN→DIRECTOR); role chính, multi-role qua `user_roles` |
+| `titles` | Danh hiệu hệ thống |
 | `office_locations` | Tọa độ văn phòng + bán kính |
-| `checkins` | Bản ghi check-in GPS/Tablet/Manual |
+| `checkins` | Bản ghi check-in GPS/Tablet/Manual — unique 1 record/user/ngày (`uq_checkins_user_day`) |
 | `tablet_tokens` | QR + OTP 60 giây, 30 giây refresh |
 | `late_tiers` | Cấu hình phạt đi trễ động |
 | `fraud_rules` | Cấu hình phạt gian lận động |
-| `penalties` | Legacy Phase 1 |
-| `settings` | `checkin_deadline`, `tablet_start/end` |
+| `settings` | `checkin_deadline`, `tablet_start/end`, version keys, `withdraw_threshold` |
+
+> **Đã xóa (26/08/2026):** bảng legacy `penalties` — mọi phạt ghi vào `penalty_tickets`.
 
 ### Phase 2 — Payment & Fund (9 bảng)
 | Bảng | Mục đích |
@@ -62,9 +63,11 @@
 `process_payment` · `waive_penalty` · `cash_payment` · `check_leave_quota` · `approve_leave` · `reject_leave` · `should_skip_penalty` · `match_unmatched` · `refund_unmatched` · `create_withdraw_request` · `approve_withdraw` · `manual_deposit` · `report_monthly` · `update_updated_at_column`
 
 ### Bảo mật
-- **RLS** bật cho cả 25 bảng
+- **RLS** bật cho cả 27 bảng
 - **Policies** theo role: staff/manager/accountant/hr/admin
 - **Helper** `auth_has_role()` để check mảng roles trong JWT
+- **Business RPC**: SECURITY DEFINER + role-guard bên trong; client write trực tiếp vào bảng nhạy cảm bị RLS deny
+- **`vn_date()`**: helper IMMUTABLE cho unique index check-in theo ngày (+07)
 
 ### Cách dùng
 ```bash

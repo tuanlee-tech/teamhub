@@ -102,6 +102,8 @@ LỚP 3: Anomaly Detection & Review
 - Nếu đã có bản ghi (bất kỳ status nào: VALID, PENDING_REVIEW, REJECTED, AUTO_ABSENT) → từ chối.
 - Ngoại lệ: Khi REJECTED, bản ghi bị xóa (giải phóng slot), user có thể check-in lại 1 lần nếu còn trong giờ tablet.
 
+> **Enforcement DB (bắt buộc):** ngoài query kiểm tra trước INSERT, schema có unique index `uq_checkins_user_day (user_id, vn_date(created_at))` chống race khi 2 request song song. `vn_date()` = ngày lịch theo múi giờ `Asia/Ho_Chi_Minh` (định nghĩa trong 001_initial_schema.sql).
+
 #### Rule 4: Mock GPS Heuristic
 
 **Tại sao cần:** GPS thật luôn có sai số (thường 3–20m, đôi khi 50m). Accuracy = 0m là bất thường, chỉ xuất hiện khi dùng app giả lập GPS.
@@ -378,6 +380,11 @@ Nếu không có API camera, quản lý tự mở phần mềm camera thủ côn
 
 **Tại sao tạo record MANUAL khi manager nhập actual_arrival_time:** Để ghi nhận attendance. Nếu không tạo, user bị tính vắng mặt dù thực tế có đến. Record MANUAL dùng để tính phạt đi trễ và báo cáo chấm công.
 
+> **Ghi chú nhất quán (26/08/2026):**
+> - Hard DELETE ở đây là **ngoại lệ duy nhất** của quy tắc append-only (codebase-decision §4.4) — chỉ áp dụng cho `checkins.status = 'PENDING_REVIEW'` bị từ chối.
+> - Trước khi DELETE phải INSERT `event_timelines` (`entity_type='CHECKIN'`, event `REJECTED`) vì bản gốc bị xóa không còn để truy vết.
+> - Record `MANUAL`: đặt `created_at` = **mốc đến thực tế** (ngày hiệu lực + `actual_arrival_time`) thay vì thời điểm bấm nút — để unique-index theo ngày và báo cáo chấm công đúng ngày.
+
 ### 4.7 Test Cases — Luồng Anomaly
 
 | TC-ID | Mô tả | Steps | Expected Result |
@@ -517,41 +524,44 @@ Tìm tier có delay_minutes lớn nhất mà <= actual_delay
 - Cáo già công sở
 
 ### 6.4 Roles (Phase 1)
-- Chỉ 2 role: **Nhân viên** và **Quản lý**.
-- 1 user = 1 role.
-- Multi-role sẽ làm ở Phase 5.
+> **Đồng bộ schema (26/08/2026):** cấu trúc thiết kế multi-role SẴN từ đầu — không phải đổi schema ở phase sau.
+- JWT claim chuẩn là **mảng `roles[]`**; bảng `user_roles` là nguồn truth để build claim; `users.role` chỉ là role chính (hiển thị/mặc định).
+- Phase 1 CHỈ cấp 2 role: **Nhân viên** (`staff`) và **Quản lý** (`manager`) — mỗi user tối đa 1 dòng trong `user_roles`.
+- Role `accountant` / `hr` / `admin` đã reserved trong CHECK constraint của schema — kích hoạt ở Phase 4 (Accountant) và Phase 5 (HR/Admin).
 
 
 ---
 
 ## 7. Data Model
 
+> **Đồng bộ schema (26/08/2026):** mọi PK là `UUID DEFAULT gen_random_uuid()`, mọi FK là `UUID` — khớp `specs/supabase/migrations/001_initial_schema.sql`. Bảng dưới liệt kê các field chính; DDL đầy đủ tham chiếu migration.
+
 ### 7.1 Bảng `users`
 | Field | Type | Mô tả |
 |---|---|---|
-| `id` | SERIAL PK | |
+| `id` | UUID PK | DEFAULT gen_random_uuid() |
 | `email` | VARCHAR(255) | Unique |
 | `password_hash` | VARCHAR(255) | Nullable nếu dùng OAuth |
 | `google_id` | VARCHAR(255) | Nullable |
 | `full_name` | VARCHAR(100) | |
 | `nickname` | VARCHAR(100) | Mặc định = full_name |
 | `avatar_url` | TEXT | |
-| `title_id` | INT FK | Danh hiệu |
-| `role` | VARCHAR(20) | `EMPLOYEE`, `MANAGER` |
+| `title_id` | UUID FK | Danh hiệu |
+| `role` | VARCHAR(20) | `staff`, `manager` (Phase 1) — schema reserved thêm `accountant`, `hr`, `admin`; xem §6.4 |
 | `is_active` | BOOLEAN | DEFAULT true |
 | `created_at` | TIMESTAMP | DEFAULT NOW() |
 
 ### 7.2 Bảng `titles`
 | Field | Type | Mô tả |
 |---|---|---|
-| `id` | SERIAL PK | |
+| `id` | UUID PK | DEFAULT gen_random_uuid() |
 | `name` | VARCHAR(100) | "Vua đi trễ" |
 | `description` | TEXT | |
 
 ### 7.3 Bảng `office_locations`
 | Field | Type | Mô tả |
 |---|---|---|
-| `id` | SERIAL PK | |
+| `id` | UUID PK | DEFAULT gen_random_uuid() |
 | `name` | VARCHAR(100) | Tên văn phòng |
 | `latitude` | DECIMAL(10,8) | Tọa độ trung tâm |
 | `longitude` | DECIMAL(11,8) | |
@@ -561,8 +571,8 @@ Tìm tier có delay_minutes lớn nhất mà <= actual_delay
 ### 7.4 Bảng `checkins`
 | Field | Type | Mô tả |
 |---|---|---|
-| `id` | SERIAL PK | |
-| `user_id` | INT FK | Nhân viên |
+| `id` | UUID PK | DEFAULT gen_random_uuid() |
+| `user_id` | UUID FK | Nhân viên |
 | `method` | VARCHAR(20) | `GPS`, `TABLET_QR`, `TABLET_OTP`, `MANUAL` |
 | `status` | VARCHAR(20) | `VALID`, `PENDING_REVIEW`, `REJECTED`, `AUTO_ABSENT` |
 | `latitude` | DECIMAL(10,8) | Từ GPS (nếu có) |
@@ -574,7 +584,7 @@ Tìm tier có delay_minutes lớn nhất mà <= actual_delay
 | `flag_reason` | TEXT | Lý do bất thường (semantic) |
 | `selfie_url` | TEXT | URL ảnh selfie (nếu có) |
 | `no_camera_reason` | TEXT | Lý do không có camera (nếu có) |
-| `reviewed_by` | INT FK | Quản lý duyệt |
+| `reviewed_by` | UUID FK | Quản lý duyệt |
 | `reviewed_at` | TIMESTAMP | Thời gian duyệt |
 | `review_note` | TEXT | Ghi chú khi duyệt/từ chối |
 | `actual_arrival_time` | TIME | Giờ thực tế có mặt (do manager nhập) |
@@ -583,7 +593,7 @@ Tìm tier có delay_minutes lớn nhất mà <= actual_delay
 ### 7.5 Bảng `tablet_tokens`
 | Field | Type | Mô tả |
 |---|---|---|
-| `id` | SERIAL PK | |
+| `id` | UUID PK | DEFAULT gen_random_uuid() |
 | `tablet_id` | VARCHAR(50) | ID tablet |
 | `qr_token` | VARCHAR(64) | Token cho QR |
 | `otp_code` | VARCHAR(6) | Mã số 6 chữ số |
@@ -594,7 +604,7 @@ Tìm tier có delay_minutes lớn nhất mà <= actual_delay
 ### 7.6 Bảng `late_tiers`
 | Field | Type | Mô tả |
 |---|---|---|
-| `id` | SERIAL PK | |
+| `id` | UUID PK | DEFAULT gen_random_uuid() |
 | `name` | VARCHAR(100) | "Muộn nhẹ" |
 | `delay_minutes` | INT | Số phút sau deadline |
 | `fine_amount` | INT | VND |
@@ -603,35 +613,28 @@ Tìm tier có delay_minutes lớn nhất mà <= actual_delay
 ### 7.7 Bảng `fraud_rules`
 | Field | Type | Mô tả |
 |---|---|---|
-| `id` | SERIAL PK | |
+| `id` | UUID PK | DEFAULT gen_random_uuid() |
 | `target` | VARCHAR(50) | `FRAUD_REQUESTER` (người nhờ) / `FRAUD_ASSISTANT` (người hộ) |
 | `fine_amount` | INT | VND |
 | `is_active` | BOOLEAN | DEFAULT true |
 
-### 7.8 Bảng `penalties`
-| Field | Type | Mô tả |
-|---|---|---|
-| `id` | SERIAL PK | |
-| `user_id` | INT FK | |
-| `checkin_id` | INT FK | Liên kết với bản ghi check-in |
-| `type` | VARCHAR(50) | `LATE`, `FRAUD`, `ABSENT` |
-| `amount` | INT | VND |
-| `reason` | TEXT | |
-| `status` | VARCHAR(20) | `PENDING`, `PAID`, `WAIVED` |
-| `created_at` | TIMESTAMP | DEFAULT NOW() |
+### 7.8 Bảng phạt — dùng `penalty_tickets`
+> **[REMOVED 26/08/2026]** Bảng `penalties` legacy đã xóa khỏi schema. Mọi loại phạt (`LATE_CHECKIN` / `FRAUD` / `ABSENT` / `MANUAL`) ghi vào **`penalty_tickets`** — định nghĩa cột đầy đủ xem Phase 2 §1.2 và migration mục 2.2. Lưu ý: `transaction_id` là NOT NULL UNIQUE nên được sinh ngay lúc tạo phiếu (8 ký tự A-Z0-9).
 
 ### 7.9 Bảng `settings`
 | Field | Type | Mô tả |
 |---|---|---|
-| `id` | SERIAL PK | |
-| `key` | VARCHAR(100) | `checkin_deadline`, `auto_absent_at`, `tablet_start`, `tablet_end` |
+| `id` | UUID PK | DEFAULT gen_random_uuid() |
+| `key` | VARCHAR(100) | `checkin_deadline`, `auto_absent_at`, `tablet_start`, `tablet_end`, `app_version`, `min_client_version`, `withdraw_threshold` |
 | `value` | VARCHAR(255) | |
-| `updated_by` | INT FK | |
+| `updated_by` | UUID FK | |
 | `updated_at` | TIMESTAMP | DEFAULT NOW() |
 
 ---
 
 ## 8. API Endpoints
+
+> **Mapping Supabase (chốt cách triển khai):** các endpoint `/api/*` dưới đây là pseudo-REST mô tả ý nghĩa nghiệp vụ. Trên stack Supabase: business action → RPC (`submit_checkin_gps`, `redeem_tablet_token`, `review_checkin`, CRUD tiers/fraud-rules); `nonce` + `tablet-token` + cron auto-absent → Edge Functions (Deno); các thao tác đọc → PostgREST trực tiếp có RLS. Phân rã chi tiết nằm ở implementation roadmap.
 
 | Method | Endpoint | Mô tả | Role |
 |---|---|---|---|

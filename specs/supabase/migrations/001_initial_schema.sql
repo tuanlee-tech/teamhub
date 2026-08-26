@@ -2,6 +2,16 @@
 -- Migration: 001_initial_schema.sql
 -- PWA Check-in GPS — Full Database Schema (Phase 1-5)
 -- Techstack: Supabase PostgreSQL 15+
+--
+-- Conflict-resolution pass (2026-08-26, pre-application baseline):
+--   * Removed legacy `penalties` table — canonical storage: `penalty_tickets`
+--   * leave_quotas counters NUMERIC(5,1) for HALF_DAY (0.5 ngày) accuracy
+--   * Business RPCs: SECURITY DEFINER + SET search_path + internal role guards
+--   * Unique one-check-in-per-day index via vn_date() (Asia/Ho_Chi_Minh)
+--
+-- WRITE MODEL: sensitive writes go through guarded SECURITY DEFINER RPCs
+--   or service_role (webhook/cron). Direct client INSERT/UPDATE on
+--   money/audit tables is intentionally DENIED by RLS (no policy).
 -- ============================================================
 
 -- Enable extensions
@@ -101,17 +111,9 @@ CREATE TABLE IF NOT EXISTS fraud_rules (
     created_at TIMESTAMPTZ DEFAULT NOW()
 );
 
--- 1.8 Penalties (Phase 1 legacy — kept for compatibility)
-CREATE TABLE IF NOT EXISTS penalties (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    user_id UUID NOT NULL REFERENCES users(id),
-    checkin_id UUID REFERENCES checkins(id),
-    type VARCHAR(50) CHECK (type IN ('LATE', 'FRAUD', 'ABSENT')),
-    amount INT NOT NULL,
-    reason TEXT,
-    status VARCHAR(20) DEFAULT 'PENDING' CHECK (status IN ('PENDING', 'PAID', 'WAIVED')),
-    created_at TIMESTAMPTZ DEFAULT NOW()
-);
+-- 1.8 [REMOVED 26/08/2026] Legacy `penalties` table đã xóa khỏi schema.
+--     Mọi loại phạt (LATE / FRAUD / ABSENT / MANUAL) ghi vào `penalty_tickets`
+--     (mục 2.2). Lý do & decision log: specs/docs/open-questions.md
 
 -- 1.9 Settings
 CREATE TABLE IF NOT EXISTS settings (
@@ -278,10 +280,10 @@ CREATE TABLE IF NOT EXISTS leave_quotas (
     user_id UUID NOT NULL REFERENCES users(id),
     year INT NOT NULL,
     annual_quota INT DEFAULT 12,
-    annual_used INT DEFAULT 0,
-    annual_remaining INT GENERATED ALWAYS AS (annual_quota + carry_over - annual_used) STORED,
+    annual_used NUMERIC(5,1) DEFAULT 0,
+    annual_remaining NUMERIC(5,1) GENERATED ALWAYS AS (annual_quota + carry_over - annual_used) STORED,
     remote_quota INT DEFAULT 3,
-    remote_used INT DEFAULT 0,
+    remote_used NUMERIC(5,1) DEFAULT 0,
     carry_over INT DEFAULT 0,
     created_at TIMESTAMPTZ DEFAULT NOW(),
     updated_at TIMESTAMPTZ DEFAULT NOW(),
@@ -429,6 +431,16 @@ GROUP BY branch;
 -- FUNCTIONS (RPC)
 -- ============================================================
 
+-- Immutable helper: calendar date theo múi giờ công ty (Vietnam +07).
+-- Dùng cho unique index "1 check-in / user / ngày" — IMMUTABLE để hợp lệ trong index.
+CREATE OR REPLACE FUNCTION vn_date(ts TIMESTAMPTZ)
+RETURNS DATE
+LANGUAGE sql
+IMMUTABLE
+AS $$
+    SELECT (ts AT TIME ZONE 'Asia/Ho_Chi_Minh')::DATE;
+$$;
+
 -- Auto-update updated_at trigger function
 CREATE OR REPLACE FUNCTION update_updated_at_column()
 RETURNS TRIGGER AS $$
@@ -439,6 +451,7 @@ END;
 $$ LANGUAGE plpgsql;
 
 -- Process Payment (Webhook → update ticket + fund + audit)
+-- KHÔNG thêm role-guard: chỉ gọi bằng service_role từ Edge Function (Sepay webhook).
 CREATE OR REPLACE FUNCTION process_payment(
     p_ticket_id UUID,
     p_sepay_id VARCHAR(50),
@@ -483,10 +496,17 @@ CREATE OR REPLACE FUNCTION waive_penalty(
 )
 RETURNS JSONB
 LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
 AS $$
 DECLARE
     v_ticket RECORD;
 BEGIN
+    -- Authorization: manager/admin only
+    IF NOT (auth_has_role('manager') OR auth_has_role('admin')) THEN
+        RETURN jsonb_build_object('success', false, 'error', 'Forbidden');
+    END IF;
+
     IF LENGTH(TRIM(p_reason)) < 10 THEN
         RETURN jsonb_build_object('success', false, 'error', 'Reason must be at least 10 characters');
     END IF;
@@ -523,10 +543,17 @@ CREATE OR REPLACE FUNCTION cash_payment(
 )
 RETURNS JSONB
 LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
 AS $$
 DECLARE
     v_ticket RECORD;
 BEGIN
+    -- Authorization: manager/admin only
+    IF NOT (auth_has_role('manager') OR auth_has_role('admin')) THEN
+        RETURN jsonb_build_object('success', false, 'error', 'Forbidden');
+    END IF;
+
     SELECT * INTO v_ticket FROM penalty_tickets WHERE id = p_ticket_id FOR UPDATE;
     IF NOT FOUND OR v_ticket.status != 'UNPAID' THEN
         RETURN jsonb_build_object('success', false, 'error', 'Ticket not found or not UNPAID');
@@ -601,11 +628,18 @@ CREATE OR REPLACE FUNCTION approve_leave(
 )
 RETURNS JSONB
 LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
 AS $$
 DECLARE
     v_req RECORD;
     v_days NUMERIC;
 BEGIN
+    -- Authorization: manager/hr/admin
+    IF NOT (auth_has_role('manager') OR auth_has_role('hr') OR auth_has_role('admin')) THEN
+        RETURN jsonb_build_object('success', false, 'error', 'Forbidden');
+    END IF;
+
     SELECT * INTO v_req FROM leave_requests WHERE id = p_request_id AND status = 'PENDING' FOR UPDATE;
     IF NOT FOUND THEN
         RETURN jsonb_build_object('success', false, 'error', 'Request not found or not pending');
@@ -649,10 +683,17 @@ CREATE OR REPLACE FUNCTION reject_leave(
 )
 RETURNS JSONB
 LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
 AS $$
 DECLARE
     v_req RECORD;
 BEGIN
+    -- Authorization: manager/hr/admin
+    IF NOT (auth_has_role('manager') OR auth_has_role('hr') OR auth_has_role('admin')) THEN
+        RETURN jsonb_build_object('success', false, 'error', 'Forbidden');
+    END IF;
+
     IF LENGTH(TRIM(p_reason)) < 10 THEN
         RETURN jsonb_build_object('success', false, 'error', 'Reason must be at least 10 characters');
     END IF;
@@ -724,11 +765,18 @@ CREATE OR REPLACE FUNCTION match_unmatched(
 )
 RETURNS JSONB
 LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
 AS $$
 DECLARE
     v_unmatched RECORD;
     v_ticket RECORD;
 BEGIN
+    -- Authorization: accountant/manager/admin
+    IF NOT (auth_has_role('accountant') OR auth_has_role('manager') OR auth_has_role('admin')) THEN
+        RETURN jsonb_build_object('success', false, 'error', 'Forbidden');
+    END IF;
+
     IF LENGTH(TRIM(p_reason)) < 10 THEN
         RETURN jsonb_build_object('success', false, 'error', 'Reason must be at least 10 characters');
     END IF;
@@ -777,11 +825,18 @@ CREATE OR REPLACE FUNCTION refund_unmatched(
 )
 RETURNS JSONB
 LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
 AS $$
 DECLARE
     v_unmatched RECORD;
     v_fund_id UUID;
 BEGIN
+    -- Authorization: accountant/manager/admin
+    IF NOT (auth_has_role('accountant') OR auth_has_role('manager') OR auth_has_role('admin')) THEN
+        RETURN jsonb_build_object('success', false, 'error', 'Forbidden');
+    END IF;
+
     IF LENGTH(TRIM(p_reason)) < 10 THEN
         RETURN jsonb_build_object('success', false, 'error', 'Reason must be at least 10 characters');
     END IF;
@@ -822,10 +877,17 @@ CREATE OR REPLACE FUNCTION create_withdraw_request(
 )
 RETURNS JSONB
 LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
 AS $$
 DECLARE
     v_balance BIGINT;
 BEGIN
+    -- Authorization: accountant/manager/admin
+    IF NOT (auth_has_role('accountant') OR auth_has_role('manager') OR auth_has_role('admin')) THEN
+        RETURN jsonb_build_object('success', false, 'error', 'Forbidden');
+    END IF;
+
     IF LENGTH(TRIM(p_reason)) < 10 THEN
         RETURN jsonb_build_object('success', false, 'error', 'Reason must be at least 10 characters');
     END IF;
@@ -851,11 +913,18 @@ CREATE OR REPLACE FUNCTION approve_withdraw(
 )
 RETURNS JSONB
 LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
 AS $$
 DECLARE
     v_req RECORD;
     v_balance BIGINT;
 BEGIN
+    -- Authorization: manager/admin duyệt (accountant KHÔNG tự duyệt — phase4 §6.1)
+    IF NOT (auth_has_role('manager') OR auth_has_role('admin')) THEN
+        RETURN jsonb_build_object('success', false, 'error', 'Forbidden');
+    END IF;
+
     SELECT * INTO v_req FROM withdraw_requests
     WHERE id = p_withdraw_id AND status IN ('PENDING', 'APPROVED') FOR UPDATE;
     IF NOT FOUND THEN
@@ -915,8 +984,15 @@ CREATE OR REPLACE FUNCTION manual_deposit(
 )
 RETURNS JSONB
 LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
 AS $$
 BEGIN
+    -- Authorization: accountant/manager/admin
+    IF NOT (auth_has_role('accountant') OR auth_has_role('manager') OR auth_has_role('admin')) THEN
+        RETURN jsonb_build_object('success', false, 'error', 'Forbidden');
+    END IF;
+
     IF LENGTH(TRIM(p_reason)) < 10 THEN
         RETURN jsonb_build_object('success', false, 'error', 'Reason must be at least 10 characters');
     END IF;
@@ -1027,6 +1103,11 @@ CREATE INDEX IF NOT EXISTS idx_checkins_user_id ON checkins(user_id);
 CREATE INDEX IF NOT EXISTS idx_checkins_created_at ON checkins(created_at);
 CREATE INDEX IF NOT EXISTS idx_checkins_status ON checkins(status);
 
+-- Anti race-condition: 1 bản ghi check-in / user / ngày (mọi status).
+-- Luồng REJECT xóa PENDING_REVIEW nên slot tự giải phóng — khớp phase1 §4.6.
+CREATE UNIQUE INDEX IF NOT EXISTS uq_checkins_user_day
+    ON checkins (user_id, vn_date(created_at));
+
 CREATE INDEX IF NOT EXISTS idx_penalty_tickets_user_id ON penalty_tickets(user_id);
 CREATE INDEX IF NOT EXISTS idx_penalty_tickets_status ON penalty_tickets(status);
 CREATE INDEX IF NOT EXISTS idx_penalty_tickets_created_at ON penalty_tickets(created_at);
@@ -1075,6 +1156,15 @@ CREATE INDEX IF NOT EXISTS idx_user_roles_role ON user_roles(role);
 -- ============================================================
 -- RLS POLICIES
 -- ============================================================
+-- WRITE MODEL (quan trọng):
+--   * Bảng tiền/audit/lịch sử (penalty_tickets, fund_transactions,
+--     unmatched_transactions, withdraw_requests, audit_logs, event_timelines,
+--     system_logs, client_logs) CỐ Ý không có policy INSERT/UPDATE/DELETE
+--     cho client.
+--   * Mọi business write diễn ra bên trong các RPC SECURITY DEFINER ở trên
+--     (đã tự kiểm tra role), hoặc qua service_role (webhook/cron).
+--   * Client ghi trực tiếp vào các bảng đó → bị RLS từ chối mặc định.
+-- ============================================================
 
 -- Enable RLS on all tables
 ALTER TABLE users ENABLE ROW LEVEL SECURITY;
@@ -1084,7 +1174,6 @@ ALTER TABLE checkins ENABLE ROW LEVEL SECURITY;
 ALTER TABLE tablet_tokens ENABLE ROW LEVEL SECURITY;
 ALTER TABLE late_tiers ENABLE ROW LEVEL SECURITY;
 ALTER TABLE fraud_rules ENABLE ROW LEVEL SECURITY;
-ALTER TABLE penalties ENABLE ROW LEVEL SECURITY;
 ALTER TABLE settings ENABLE ROW LEVEL SECURITY;
 ALTER TABLE payment_settings ENABLE ROW LEVEL SECURITY;
 ALTER TABLE penalty_tickets ENABLE ROW LEVEL SECURITY;
@@ -1152,11 +1241,6 @@ CREATE POLICY "Late tiers read all" ON late_tiers FOR SELECT TO authenticated US
 -- Fraud Rules
 DROP POLICY IF EXISTS "Fraud rules read all" ON fraud_rules;
 CREATE POLICY "Fraud rules read all" ON fraud_rules FOR SELECT TO authenticated USING (true);
-
--- Penalties (legacy)
-DROP POLICY IF EXISTS "Penalties user own" ON penalties;
-CREATE POLICY "Penalties user own" ON penalties FOR SELECT
-USING (user_id = auth.uid() OR auth_has_role('manager') OR auth_has_role('admin'));
 
 -- Settings
 DROP POLICY IF EXISTS "Settings manager" ON settings;

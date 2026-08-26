@@ -22,18 +22,18 @@
 | `reference_code` | VARCHAR(100) | nullable | Mã tham chiếu Sepay hoặc số chứng từ |
 | `collector_name` | VARCHAR(100) | nullable | Người thu tiền mặt |
 | `withdraw_request_id` | UUID | FK → withdraw_requests, nullable | Link yêu cầu rút quỹ |
-| `created_by` | UUID | FK → users, NOT NULL | Người tạo transaction |
+| `created_by` | UUID | FK → users, nullable | Người tạo transaction — NULL = system/webhook (vd `process_payment`) — khớp migration |
 | `created_at` | TIMESTAMPTZ | DEFAULT now() | |
 
 **RLS:**
 ```sql
--- Accountant/Manager/Admin xem tất cả
-CREATE POLICY "Accountant view fund" ON fund_transactions FOR SELECT
-USING (auth.jwt() ->> 'role' IN ('accountant', 'manager', 'admin'));
+-- Accountant/Manager/Admin xem tất cả (JWT claim chuẩn: mảng roles[])
+CREATE POLICY "Fund transactions accountant" ON fund_transactions FOR SELECT
+USING (auth_has_role('accountant') OR auth_has_role('manager') OR auth_has_role('admin'));
 
--- Chỉ Accountant/Manager/Admin mới được INSERT (qua RPC, không qua REST trực tiếp)
-CREATE POLICY "Accountant insert fund" ON fund_transactions FOR INSERT
-WITH CHECK (auth.jwt() ->> 'role' IN ('accountant', 'manager', 'admin'));
+-- KHÔNG có policy INSERT cho client: mọi ghi vào quỹ đi qua RPC
+-- SECURITY DEFINER (manual_deposit, match_unmatched, refund_unmatched,
+-- approve_withdraw) hoặc service_role — client write trực tiếp bị RLS deny.
 ```
 
 > **Hint thay thế:** Nếu dùng Node.js/Express: `requireRole(['accountant', 'manager', 'admin'])` middleware trước mọi route quỹ. Nếu dùng Firebase: Firestore rules `allow read: if request.auth.token.role in ['accountant', 'manager', 'admin']`.

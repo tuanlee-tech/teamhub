@@ -9,7 +9,7 @@
 TRUNCATE TABLE login_attempts, user_push_tokens, user_preferences, notifications,
   event_timelines, client_logs, system_logs, audit_logs, unmatched_transactions,
   sepay_webhook_logs, fund_transactions, withdraw_requests, leave_request_comments,
-  leave_requests, leave_quotas, penalty_tickets, penalties, checkins, tablet_tokens,
+  leave_requests, leave_quotas, penalty_tickets, checkins, tablet_tokens,
   user_roles, users, office_locations, payment_settings, settings, titles,
   leave_types_config CASCADE;
 */
@@ -376,20 +376,8 @@ INSERT INTO sepay_webhook_logs (id, sepay_id, ticket_id, payload, processed_at) 
   (gen_random_uuid(), 'SEPAY_REF_002', (SELECT id FROM penalty_tickets WHERE transaction_id = 'TX000005'), '{"id":12346,"gateway":"VietinBank","transferAmount":20000,"content":"SEVQR TKPHN TX000005 VU THI F"}'::jsonb, '2026-08-24 10:15:00+07');
 
 -- ============================================================
--- 28. PENALTIES (Legacy Phase 1 — giữ để test backward compat)
--- ============================================================
-INSERT INTO penalties (id, user_id, checkin_id, type, amount, status, created_at)
-SELECT 
-  gen_random_uuid(),
-  c.user_id,
-  c.id,
-  'LATE',
-  10000,
-  'PAID',
-  c.created_at
-FROM checkins c
-WHERE c.status = 'VALID' AND c.created_at < '2026-08-25'
-LIMIT 2;
+-- [REMOVED 26/08/2026] Mục 28 PENALTIES (legacy) đã xóa theo decision log
+-- — bảng `penalties` không còn tồn tại; phạt ghi vào `penalty_tickets` (mục 11).
 
 \echo '✅ Seed data inserted successfully!'
 \echo 'Summary:'

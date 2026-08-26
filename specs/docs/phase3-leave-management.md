@@ -32,13 +32,13 @@
 CREATE POLICY "User view own leave" ON leave_requests FOR SELECT
 USING (auth.uid() = user_id);
 
--- Manager xem đơn của team (giả sử có cột manager_id trong users hoặc dùng department)
+-- Manager xem đơn của team (JWT claim chuẩn: mảng roles[] — helper auth_has_role)
 CREATE POLICY "Manager view team leave" ON leave_requests FOR SELECT
-USING (auth.jwt() ->> 'role' = 'manager');
+USING (auth_has_role('manager') OR auth_has_role('admin'));
 
 -- HR xem tất cả
 CREATE POLICY "HR view all leave" ON leave_requests FOR SELECT
-USING (auth.jwt() ->> 'role' = 'hr');
+USING (auth_has_role('hr') OR auth_has_role('admin'));
 
 -- User chỉ được INSERT/PATCH đơn của mình (DRAFT/PENDING/CANCELLED)
 CREATE POLICY "User manage own leave" ON leave_requests FOR ALL
@@ -57,18 +57,22 @@ USING (auth.uid() = user_id AND status IN ('DRAFT', 'PENDING'));
 | `user_id` | UUID | FK → users, NOT NULL | |
 | `year` | INT | NOT NULL | Ví dụ: 2026 |
 | `annual_quota` | INT | DEFAULT 12 | Tổng ngày nghỉ năm |
-| `annual_used` | INT | DEFAULT 0 | Đã dùng |
-| `annual_remaining` | INT | GENERATED | `annual_quota + carry_over - annual_used` |
-| `remote_quota` | INT | DEFAULT 3 | Tổng remote tháng (hoặc tách bảng riêng) |
-| `remote_used` | INT | DEFAULT 0 | |
+| `annual_used` | NUMERIC(5,1) | DEFAULT 0 | Đã dùng (0.5 cho HALF_DAY) |
+| `annual_remaining` | NUMERIC(5,1) | GENERATED | `annual_quota + carry_over - annual_used` |
+| `remote_quota` | INT | DEFAULT 3 | Tổng remote (⚠️ OQ-03: tháng hay năm?) |
+| `remote_used` | NUMERIC(5,1) | DEFAULT 0 | |
 | `carry_over` | INT | DEFAULT 0 | Ngày tích lũy từ năm trước (max 5) |
 | `created_at` | TIMESTAMPTZ | DEFAULT now() | |
 | `updated_at` | TIMESTAMPTZ | DEFAULT now() | |
 
 **Generated column:**
 ```sql
-annual_remaining INT GENERATED ALWAYS AS (annual_quota + carry_over - annual_used) STORED;
+annual_remaining NUMERIC(5,1) GENERATED ALWAYS AS (annual_quota + carry_over - annual_used) STORED;
 ```
+
+> **Đồng bộ schema (26/08/2026):** các cột used/remaining dùng `NUMERIC(5,1)` để HALF_DAY cộng đúng 0.5 ngày — trước đây INT gây làm tròn sai (2 lần nửa ngày ≠ 1 ngày).
+
+> ⚠️ **OPEN QUESTION OQ-03:** `remote_quota` được mô tả là "theo THÁNG" nhưng bảng lưu theo NĂM và `approve_leave` cộng dồn vào `remote_used` của năm. Cần human quyết monthly hay yearly trước khi implement luồng REMOTE. Xem `specs/docs/open-questions.md`.
 
 **RLS:** User chỉ xem quota của mình. Manager/HR xem tất cả.
 
@@ -180,7 +184,11 @@ SELECT
   LEAST(
     (SELECT annual_remaining FROM leave_quotas lq 
      WHERE lq.user_id = users.id AND lq.year = EXTRACT(YEAR FROM CURRENT_DATE) - 1),
-    5
+    CASE grade 
+      WHEN 'INTERN' THEN 0
+      WHEN 'JUNIOR' THEN 3   -- cap theo grade (fix 26/08/2026 — trước đây hard-code 5)
+      ELSE 5                 -- SENIOR / MANAGER / DIRECTOR
+    END
   ),
   CASE grade
     WHEN 'INTERN' THEN 0
@@ -372,6 +380,8 @@ BEGIN
 END;
 $$;
 ```
+
+> Với `annual_used NUMERIC(5,1)` (schema đã đồng bộ), phép cộng `v_days = 0.5` của HALF_DAY giữ nguyên precision.
 
 ### 4.4 RPC: reject_leave
 
