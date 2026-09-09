@@ -3,7 +3,7 @@
 import { useActionState } from "react";
 
 import { ensureRosterForDate, type RosterActionState } from "@/app/manager/roster/actions";
-import { Feedback, PrimaryButton, useToast } from "@/components/ui";
+import { PrimaryButton, useToast, useToastFeedback } from "@/components/ui";
 
 export function RosterDayActions({ workDate }: { workDate: string }) {
   const { success } = useToast();
@@ -12,6 +12,7 @@ export function RosterDayActions({ workDate }: { workDate: string }) {
     if (nextState.success) success(nextState.success);
     return nextState;
   }, {} as RosterActionState);
+  useToastFeedback(state, { success: false });
 
   return (
     <div className="flex flex-wrap items-center gap-3" data-tour="roster-sync">
@@ -19,7 +20,6 @@ export function RosterDayActions({ workDate }: { workDate: string }) {
         <input name="workDate" type="hidden" value={workDate} />
         <PrimaryButton fullWidth={false}>Cập nhật danh sách</PrimaryButton>
       </form>
-      <Feedback error={state.error} />
     </div>
   );
 }

@@ -1,18 +1,18 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useSearchParams } from "next/navigation";
-import { createBrowserClient } from "@supabase/ssr";
-import QRCode from "qrcode";
 import { CalendarDays, LogOut, Maximize, Mic, MicOff, QrCode, ScreenShare, Timer } from "lucide-react";
+import { useSearchParams } from "next/navigation";
+import QRCode from "qrcode";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 import { signOut } from "@/app/(auth)/actions";
 import { PaymentQrPanel } from "@/components/qr/payment-qr-panel";
-import { CurrencyText, Logo, Modal, Stamp, Toggle } from "@/components/ui";
+import { CurrencyText, Logo, Modal, SecondaryButton, Stamp, Toggle, useToast } from "@/components/ui";
 import { SegmentedTabs } from "@/components/ui/segmented-tabs";
 import { formatTimeInTimezone } from "@/lib/domain/date";
 import type { PaymentBank } from "@/lib/domain/payment";
-import { getPublicEnv } from "@/lib/env";
+import { useOrganizationRealtime } from "@/lib/realtime/organization-events";
+import { createClient } from "@/lib/supabase/client";
 import Link from "next/link";
 
 type SessionInfo = {
@@ -20,6 +20,7 @@ type SessionInfo = {
   work_date: string | null;
   session_start_at: string | null;
   session_end_at: string | null;
+  last_successful_check_in_at?: string | null;
 };
 
 type FeedItem = {
@@ -48,6 +49,8 @@ type LateRow = {
   outstanding_vnd: number | null;
 };
 
+const CODE_TTL_MS = 30 * 60 * 1000;
+
 function methodLabel(method: FeedItem["method"]) {
   return method.toUpperCase();
 }
@@ -74,22 +77,16 @@ function formatCountdown(seconds: number) {
 
 export function KioskScreen({
   orgId,
-  orgName,
   timezone,
   bank,
   initialSession,
 }: {
   orgId: string;
-  orgName: string;
   timezone: string;
   bank: PaymentBank | null;
   initialSession: SessionInfo | null;
 }) {
-  const env = getPublicEnv();
-  const supabase = useMemo(
-    () => createBrowserClient(env.NEXT_PUBLIC_SUPABASE_URL, env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY),
-    [env],
-  );
+  const supabase = createClient();
   const searchParams = useSearchParams();
 
   const tab: "checkin" | "late" = searchParams.get("tab") === "late" ? "late" : "checkin";
@@ -108,23 +105,45 @@ export function KioskScreen({
   const [feed, setFeed] = useState<FeedItem[]>([]);
 
   const [mcOn, setMcOn] = useState(false);
+  const mcOnRef = useRef(false);
+  const [ttsTestReady, setTtsTestReady] = useState(false);
   const [fullscreen, setFullscreen] = useState(false);
   const [wakeLocked, setWakeLocked] = useState(false);
 
   const wakeLockRef = useRef<WakeLockSentinel | null>(null);
-  const timersRef = useRef<number[]>([]);
+  const ttsTimerRef = useRef<number | null>(null);
   const [expanded, setExpanded] = useState<LateRow | null>(null);
 
   const defaultLateDate = initialSession?.work_date ?? formatWorkDateLocal(new Date(), timezone);
   const [lateDate, setLateDate] = useState(defaultLateDate);
   const [lateRows, setLateRows] = useState<LateRow[]>([]);
   const [lateLoading, setLateLoading] = useState(false);
+  const { success: toastSuccess, error: toastError } = useToast();
+  const generateCodesRef = useRef<((force?: boolean) => Promise<void>) | null>(null);
+  const lastSuccessfulCheckInRef = useRef<string | null>(initialSession?.last_successful_check_in_at ?? null);
+
+  useEffect(() => {
+    mcOnRef.current = mcOn;
+  }, [mcOn]);
+
+  useEffect(() => {
+    // Keep browser-only speech controls out of the server/hydration markup.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setTtsTestReady(true);
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      if (ttsTimerRef.current !== null) window.clearTimeout(ttsTimerRef.current);
+      if ("speechSynthesis" in window) window.speechSynthesis.cancel();
+    };
+  }, []);
 
   const qrSecondsRemaining = qrDataUrl
-    ? Math.max(0, Math.ceil((codesGeneratedAt + 30_000 - now.getTime()) / 1000))
+    ? Math.max(0, Math.ceil((codesGeneratedAt + CODE_TTL_MS - now.getTime()) / 1000))
     : 0;
   const otpSecondsRemaining = otp
-    ? Math.max(0, Math.ceil((codesGeneratedAt + 5 * 60_000 - now.getTime()) / 1000))
+    ? Math.max(0, Math.ceil((codesGeneratedAt + CODE_TTL_MS - now.getTime()) / 1000))
     : 0;
 
   const refreshSession = useCallback(async () => {
@@ -133,7 +152,15 @@ export function KioskScreen({
         p_organization_id: orgId,
       });
       if (error) throw error;
-      setSession(data as SessionInfo);
+      const nextSession = data as SessionInfo;
+      if (
+        nextSession.last_successful_check_in_at &&
+        nextSession.last_successful_check_in_at !== lastSuccessfulCheckInRef.current
+      ) {
+        lastSuccessfulCheckInRef.current = nextSession.last_successful_check_in_at;
+        generateCodesRef.current?.(true).catch(() => { });
+      }
+      setSession(nextSession);
     } catch {
       setSessionError("Không xác định được trạng thái ca làm.");
     }
@@ -143,7 +170,7 @@ export function KioskScreen({
     async (force = false) => {
       if (!session?.active) return;
       const age = Date.now() - codesGeneratedAt;
-      if (!force && age < 20_000 && qrToken) return;
+      if (!force && age < CODE_TTL_MS && qrToken) return;
       setIsBusy(true);
       setSessionError(null);
       try {
@@ -176,6 +203,10 @@ export function KioskScreen({
     [session, supabase, orgId, codesGeneratedAt, qrToken],
   );
 
+  useEffect(() => {
+    generateCodesRef.current = generateCodes;
+  }, [generateCodes]);
+
   const startWakeLock = useCallback(async () => {
     try {
       const sentinel = await (navigator as Navigator & {
@@ -206,12 +237,22 @@ export function KioskScreen({
     // eslint-disable-next-line react-hooks/set-state-in-effect
     setClockReady(true);
     const clock = window.setInterval(() => setNow(new Date()), 1000);
+    // Session boundaries change slowly; avoid turning every kiosk into a
+    // two-second RPC poller (each browser call also creates a CORS preflight).
     const refresh = window.setInterval(() => {
-      refreshSession().catch(() => { });
-    }, 10_000);
-    const timers = timersRef.current;
-    timers.push(clock, refresh);
-    return () => timers.forEach((t) => window.clearInterval(t));
+      if (document.visibilityState === "visible") {
+        refreshSession().catch(() => { });
+      }
+    }, 30_000);
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === "visible") refreshSession().catch(() => { });
+    };
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+    return () => {
+      window.clearInterval(clock);
+      window.clearInterval(refresh);
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
+    };
   }, [refreshSession]);
 
   useEffect(() => {
@@ -220,58 +261,19 @@ export function KioskScreen({
   }, [refreshSession]);
 
   useEffect(() => {
-    if (session?.active) {
-      // eslint-disable-next-line react-hooks/set-state-in-effect -- regenerate codes once session flips active
-      generateCodes().catch(() => { });
-      const gen = window.setInterval(() => generateCodes().catch(() => { }), 10_000);
-      const timers = timersRef.current;
-      timers.push(gen);
-      return () => {
-        window.clearInterval(gen);
-      };
+    if (!session?.active) {
+      const resetTimer = window.setTimeout(() => {
+        setQrDataUrl("");
+        setQrToken("");
+        setOtp("");
+      }, 0);
+      return () => window.clearTimeout(resetTimer);
     }
-    setQrDataUrl("");
-    setQrToken("");
-    setOtp("");
-  }, [session, generateCodes]);
 
-  useEffect(() => {
-    const channel = supabase
-      .channel("kiosk-feed")
-      .on(
-        "postgres_changes",
-        {
-          event: "INSERT",
-          schema: "public",
-          table: "check_in_attempts",
-          filter: `organization_id=eq.${orgId}`,
-        },
-        (payload) => {
-          const item = payload.new as FeedItem;
-          supabase
-            .from("profiles")
-            .select("display_name")
-            .eq("user_id", item.user_id)
-            .maybeSingle()
-            .then(({ data }) => {
-              const enriched = { ...item, display_name: data?.display_name ?? null };
-              setFeed((prev) => [enriched, ...prev.slice(0, 9)]);
-              if (mcOn && "speechSynthesis" in window) {
-                const name = data?.display_name ?? "Có thành viên";
-                const text = item.succeeded ? `${name} đã điểm danh` : `${name} điểm danh thất bại`;
-                const utterance = new SpeechSynthesisUtterance(text);
-                utterance.lang = "vi-VN";
-                window.speechSynthesis.cancel();
-                window.speechSynthesis.speak(utterance);
-              }
-            });
-        },
-      )
-      .subscribe();
-    return () => {
-      channel.unsubscribe();
-    };
-  }, [supabase, orgId, mcOn]);
+    generateCodesRef.current?.();
+    const gen = window.setInterval(() => generateCodesRef.current?.(), 10_000);
+    return () => window.clearInterval(gen);
+  }, [session?.active]);
 
   const loadLate = useCallback(
     async (date: string) => {
@@ -291,6 +293,39 @@ export function KioskScreen({
     [supabase, orgId],
   );
 
+  const loadRecentFeed = useCallback(async () => {
+    const { data, error } = await supabase.rpc("get_recent_check_in_attempts", {
+      p_organization_id: orgId,
+      p_limit: 10,
+    });
+    if (error) return;
+
+    setFeed(
+      ((data ?? []) as Array<{
+        attempt_id: number;
+        user_id: string;
+        display_name: string | null;
+        method: FeedItem["method"];
+        succeeded: boolean;
+        rejection_reason: string | null;
+        server_received_at: string;
+      }>).map((item) => ({
+        id: String(item.attempt_id),
+        user_id: item.user_id,
+        display_name: item.display_name,
+        method: item.method,
+        succeeded: item.succeeded,
+        rejection_reason: item.rejection_reason,
+        server_received_at: item.server_received_at,
+      })),
+    );
+  }, [supabase, orgId]);
+
+  useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- initial activity snapshot
+    loadRecentFeed().catch(() => { });
+  }, [loadRecentFeed]);
+
   useEffect(() => {
     // eslint-disable-next-line react-hooks/set-state-in-effect -- initial late-list load
     loadLate(defaultLateDate).catch(() => { });
@@ -305,13 +340,78 @@ export function KioskScreen({
     [loadLate],
   );
 
+  const speakText = useCallback(
+    (text: string) => {
+      if (!("speechSynthesis" in window)) {
+        toastError("Trình duyệt không hỗ trợ đọc TTS.");
+        return;
+      }
+
+      window.speechSynthesis.cancel();
+      if (ttsTimerRef.current !== null) window.clearTimeout(ttsTimerRef.current);
+      ttsTimerRef.current = window.setTimeout(() => {
+        const utterance = new SpeechSynthesisUtterance(text);
+        const vietnameseVoice = window.speechSynthesis
+          .getVoices()
+          .find((voice) => voice.lang.toLowerCase().startsWith("vi"));
+        if (vietnameseVoice) utterance.voice = vietnameseVoice;
+        utterance.lang = vietnameseVoice?.lang ?? "vi-VN";
+        utterance.rate = 0.9;
+        utterance.pitch = 1;
+        window.speechSynthesis.speak(utterance);
+        ttsTimerRef.current = null;
+      }, 80);
+    },
+    [toastError],
+  );
+
+  const speakTest = useCallback(
+    (text: string) => speakText(text),
+    [speakText],
+  );
+
+  useOrganizationRealtime(orgId, {
+    onCheckIn: (event) => {
+      const name = event.display_name ?? "Có thành viên";
+      const item: FeedItem = {
+        id: String(event.attempt_id),
+        user_id: event.user_id,
+        method: event.method,
+        succeeded: event.succeeded,
+        rejection_reason: event.rejection_reason,
+        server_received_at: event.server_received_at,
+        display_name: event.display_name,
+      };
+      setFeed((prev) => [item, ...prev.filter((current) => current.id !== item.id).slice(0, 9)]);
+      if (event.succeeded) {
+        toastSuccess(`${name} đã điểm danh.`);
+      } else {
+        toastError(`${name}: ${reasonLabel(event.rejection_reason)}.`);
+      }
+      if (event.succeeded) {
+        lastSuccessfulCheckInRef.current = event.server_received_at;
+        generateCodesRef.current?.(true).catch(() => { });
+      }
+      if (mcOnRef.current && "speechSynthesis" in window) {
+        const text = event.succeeded ? `${name} đã điểm danh` : `${name} điểm danh thất bại`;
+        speakText(text);
+      }
+    },
+    onFine: () => {
+      if (tab === "late") loadLate(lateDate).catch(() => { });
+    },
+    onFund: () => {
+      if (tab === "late") loadLate(lateDate).catch(() => { });
+    },
+  });
+
   const clock = clockReady
     ? new Intl.DateTimeFormat("vi-VN", {
-        hour: "2-digit",
-        minute: "2-digit",
-        second: "2-digit",
-        timeZone: timezone,
-      }).format(now)
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
+      timeZone: timezone,
+    }).format(now)
     : "--:--:--";
 
   const sessionStartLabel = session?.session_start_at
@@ -467,10 +567,29 @@ export function KioskScreen({
                     <Toggle checked={mcOn} onChange={(e) => setMcOn(e.target.checked)} label="Đọc kết quả" />
                     {mcOn ? <Mic className="size-5 text-[var(--signal)]" /> : <MicOff className="size-5 text-[var(--ink-soft)]" />}
                   </div>
+
                 </div>
+                {ttsTestReady ? (
+                  <div className="rounded-2xl border border-dashed border-[var(--line)] px-4 py-3">
+                    <p className="text-xs font-black tracking-[0.16em] text-[var(--ink-soft)] uppercase">
+                      Kiểm tra loa
+                    </p>
+                    <div className="mt-2 flex flex-wrap gap-2">
+                      <SecondaryButton type="button" fullWidth={false} onClick={() => speakTest("Xin chào, đây là bài kiểm tra loa.")}>
+                        Xin chào
+                      </SecondaryButton>
+                      <SecondaryButton type="button" fullWidth={false} onClick={() => speakTest("Nguyễn Văn An đã điểm danh.")}>
+                        Thành công
+                      </SecondaryButton>
+                      <SecondaryButton type="button" fullWidth={false} onClick={() => speakTest("Nguyễn Văn An điểm danh thất bại. Mã QR không hợp lệ.")}>
+                        Thất bại
+                      </SecondaryButton>
+                    </div>
+                  </div>
+                ) : null}
               </section>
 
-              <aside className="paper-panel space-y-4 p-5">
+              <aside className="paper-panel space-y-4 p-5 ">
                 <div className="flex items-center justify-between">
                   <p className="text-xs font-black tracking-[0.16em] text-[var(--ink-soft)] uppercase">
                     Hoạt động gần đây

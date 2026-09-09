@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Check, Copy, Download, Share, ShieldCheck } from "lucide-react";
 
 import { CurrencyText, SecondaryButton, Stamp } from "@/components/ui";
@@ -55,6 +55,11 @@ export function PaymentQrPanel({
 }: PaymentQrPanelProps) {
   const [copied, setCopied] = useState<string | null>(null);
   const [sharing, setSharing] = useState(false);
+  const copiedTimerRef = useRef<number | null>(null);
+
+  useEffect(() => () => {
+    if (copiedTimerRef.current !== null) window.clearTimeout(copiedTimerRef.current);
+  }, []);
 
   const hasOutstanding = status === "unpaid" && outstandingVnd > 0;
   const paidOff = !hasOutstanding;
@@ -71,7 +76,11 @@ export function PaymentQrPanel({
       const ok = await copyText(value);
       if (ok) {
         setCopied(key);
-        setTimeout(() => setCopied(null), 1500);
+        if (copiedTimerRef.current !== null) window.clearTimeout(copiedTimerRef.current);
+        copiedTimerRef.current = window.setTimeout(() => {
+          copiedTimerRef.current = null;
+          setCopied(null);
+        }, 1500);
       }
     },
     [],

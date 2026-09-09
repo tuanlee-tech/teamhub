@@ -2,27 +2,27 @@
 
 import { useRouter, useSearchParams } from "next/navigation";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { createBrowserClient } from "@supabase/ssr";
 import jsQR from "jsqr";
-import { CameraOff, QrCode } from "lucide-react";
+import { Clock, QrCode } from "lucide-react";
 
-import { Feedback, FormInput, FormLabel, PrimaryButton } from "@/components/ui";
+import { FormInput, FormLabel, PrimaryButton, useToast } from "@/components/ui";
 import { SegmentedTabs } from "@/components/ui/segmented-tabs";
 import { formatNumber } from "@/lib/currency";
-import { getPublicEnv } from "@/lib/env";
-
-type CheckInFeedback = { type: "success" | "error"; text: string } | null;
+import { createClient } from "@/lib/supabase/client";
 
 async function submitCheckIn(
   orgId: string,
   payload: { mode: "otp"; code: string } | { mode: "qr"; token: string },
 ) {
-  const env = getPublicEnv();
-  const supabase = createBrowserClient(env.NEXT_PUBLIC_SUPABASE_URL, env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY);
+  const supabase = createClient();
   if (payload.mode === "otp") {
-    return (await supabase.rpc("check_in_otp", { organization_id: orgId, code: payload.code })).data;
+    const { data, error } = await supabase.rpc("check_in_otp", { organization_id: orgId, code: payload.code });
+    if (error) throw error;
+    return data;
   }
-  return (await supabase.rpc("check_in_qr", { organization_id: orgId, token: payload.token })).data;
+  const { data, error } = await supabase.rpc("check_in_qr", { organization_id: orgId, token: payload.token });
+  if (error) throw error;
+  return data;
 }
 
 function resultText(result: { ok: boolean; reason?: string; state?: string; late_minutes?: number; fine_amount_snapshot?: number }) {
@@ -42,23 +42,36 @@ function resultText(result: { ok: boolean; reason?: string; state?: string; late
   return result.reason ? (map[result.reason] ?? `Chưa điểm danh được (${result.reason}).`) : "Chưa điểm danh được. Thử lại.";
 }
 
-export function QrHub({ orgId }: { orgId: string }) {
+export function QrHub({
+  orgId,
+  checkInWindowOpen,
+  sessionStart,
+  sessionEnd,
+}: {
+  orgId: string;
+  checkInWindowOpen: boolean;
+  sessionStart: string | null;
+  sessionEnd: string | null;
+}) {
   const router = useRouter();
   const searchParams = useSearchParams();
   const tab = searchParams.get("tab") === "otp" ? "otp" : "scan";
+  const { error, success } = useToast();
 
   const [otp, setOtp] = useState("");
   const [submitting, setSubmitting] = useState(false);
-  const [feedback, setFeedback] = useState<CheckInFeedback>(null);
+  const submittingRef = useRef(false);
   const [cameraOn, setCameraOn] = useState(false);
-  const [cameraError, setCameraError] = useState<string | null>(null);
-  const [cameraGuide, setCameraGuide] = useState(false);
   const videoRef = useRef<HTMLVideoElement>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const scanLoopRef = useRef<number | null>(null);
   const scanFrameRef = useRef<string | null>(null);
+  const cameraRequestRef = useRef(0);
+  const scanActiveRef = useRef(false);
 
   const stopCamera = useCallback(() => {
+    cameraRequestRef.current += 1;
+    scanActiveRef.current = false;
     if (scanLoopRef.current != null) {
       cancelAnimationFrame(scanLoopRef.current);
       scanLoopRef.current = null;
@@ -70,61 +83,50 @@ export function QrHub({ orgId }: { orgId: string }) {
 
   useEffect(() => stopCamera, [stopCamera]);
 
-  useEffect(() => {
-    const clearRefreshFeedback = () => {
-      setFeedback(null);
-      setCameraError(null);
-    };
-
-    window.addEventListener("teamhub:pull-refresh", clearRefreshFeedback);
-    return () => window.removeEventListener("teamhub:pull-refresh", clearRefreshFeedback);
-  }, []);
-
   const handleCode = useCallback(
     async (value: string) => {
-      if (!value || submitting) return;
+      if (!value || submittingRef.current) return;
+      submittingRef.current = true;
       setSubmitting(true);
-      setFeedback(null);
       try {
         const result = await submitCheckIn(orgId, { mode: "qr", token: value.trim() });
         if (result?.ok) {
-          setFeedback({ type: "success", text: resultText(result) });
+          success(resultText(result));
           stopCamera();
           router.push("/member");
         } else {
-          setFeedback({ type: "error", text: resultText(result ?? { ok: false }) });
+          error(resultText(result ?? { ok: false }));
         }
-      } catch {
-        setFeedback({ type: "error", text: "Lỗi kết nối. Vui lòng thử lại." });
+      } catch (caughtError) {
+        error(checkInErrorText(caughtError));
       } finally {
+        submittingRef.current = false;
         setSubmitting(false);
       }
     },
-    [orgId, submitting, router, stopCamera],
+    [error, orgId, router, stopCamera, success],
   );
 
   async function startCamera() {
-    setCameraError(null);
-    setCameraGuide(false);
+    const requestId = ++cameraRequestRef.current;
     try {
       if (!window.isSecureContext) {
-        setCameraError("Camera cần kết nối HTTPS. Hãy mở đúng địa chỉ https://...ngrok-free.dev, không dùng http://.");
+        error("Camera cần kết nối HTTPS. Hãy mở đúng địa chỉ https://...ngrok-free.dev, không dùng http://.");
         return;
       }
       if (!navigator.mediaDevices?.getUserMedia) {
-        setCameraError("Safari không cấp API camera ở địa chỉ hiện tại. Hãy mở bằng Safari trực tiếp, không qua iframe.");
+        error("Trình duyệt hiện tại không hỗ trợ camera ở địa chỉ này. Hãy mở trang trực tiếp, không qua iframe.");
         return;
       }
       if (navigator.permissions?.query) {
         try {
           const permission = await navigator.permissions.query({ name: "camera" as PermissionName });
           if (permission.state === "denied") {
-            setCameraGuide(true);
-            setCameraError("Safari đang chặn camera cho trang này.");
+            error("Trình duyệt đang chặn camera cho trang này. Hãy cấp quyền Camera trong cài đặt trình duyệt.");
             return;
           }
         } catch {
-          // Safari may not expose camera permission state; getUserMedia will prompt.
+          // Some browsers may not expose camera permission state; getUserMedia will prompt.
         }
       }
       const NativeBarcodeDetector = (window as unknown as {
@@ -140,13 +142,17 @@ export function QrHub({ orgId }: { orgId: string }) {
         video: { facingMode: "environment" },
         audio: false,
       });
+      if (requestId !== cameraRequestRef.current) {
+        stream.getTracks().forEach((track) => track.stop());
+        return;
+      }
       streamRef.current = stream;
       setCameraOn(true);
 
       // The video element is mounted by the cameraOn state update.
       await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
       const video = videoRef.current;
-      if (!video) {
+      if (!video || requestId !== cameraRequestRef.current) {
         stream.getTracks().forEach((track) => track.stop());
         setCameraOn(false);
         throw new Error("camera_video_unavailable");
@@ -157,8 +163,15 @@ export function QrHub({ orgId }: { orgId: string }) {
       video.playsInline = true;
       video.setAttribute("playsinline", "true");
       await video.play();
+      if (requestId !== cameraRequestRef.current) {
+        stream.getTracks().forEach((track) => track.stop());
+        if (streamRef.current === stream) streamRef.current = null;
+        return;
+      }
+      scanActiveRef.current = true;
 
       const loop = async () => {
+        if (!scanActiveRef.current || requestId !== cameraRequestRef.current) return;
         if (video.readyState === video.HAVE_ENOUGH_DATA && video.videoWidth > 0 && context) {
           try {
             let code: string | undefined;
@@ -172,7 +185,9 @@ export function QrHub({ orgId }: { orgId: string }) {
               const image = context.getImageData(0, 0, canvas.width, canvas.height);
               code = jsQR(image.data, image.width, image.height, { inversionAttempts: "attemptBoth" })?.data;
             }
-            if (code && code !== scanFrameRef.current) {
+            if (!code) {
+              scanFrameRef.current = null;
+            } else if (code !== scanFrameRef.current) {
               scanFrameRef.current = code;
               handleCode(code);
             }
@@ -180,23 +195,27 @@ export function QrHub({ orgId }: { orgId: string }) {
             // frame is not readable yet
           }
         }
+        if (!scanActiveRef.current || requestId !== cameraRequestRef.current) return;
         scanLoopRef.current = requestAnimationFrame(loop);
       };
       scanLoopRef.current = requestAnimationFrame(loop);
     } catch (err) {
       const name = (err as { name?: string }).name;
-      setCameraError(
+      error(
         name === "NotAllowedError"
-          ? "Safari chưa cho phép trang này dùng camera."
+          ? "Trình duyệt chưa cho phép trang này dùng camera."
           : name === "NotFoundError"
             ? "Không tìm thấy camera trên thiết bị."
             : "Không mở được camera. Kiểm tra quyền camera và dùng mã OTP nếu cần.",
       );
-      setCameraGuide(name === "NotAllowedError" || name === "SecurityError");
     }
   }
 
   useEffect(() => {
+    if (!checkInWindowOpen) {
+      const stopTimer = window.setTimeout(stopCamera, 0);
+      return () => window.clearTimeout(stopTimer);
+    }
     if (tab !== "scan") {
       const stopTimer = window.setTimeout(stopCamera, 0);
       return () => window.clearTimeout(stopTimer);
@@ -205,25 +224,46 @@ export function QrHub({ orgId }: { orgId: string }) {
     return () => window.clearTimeout(startTimer);
     // Camera starts once after the scan tab has hydrated.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tab]);
+  }, [checkInWindowOpen, tab, stopCamera]);
 
   async function submitOtp() {
-    if (!/^\d{6}$/.test(otp.trim()) || submitting) return;
+    if (!/^\d{6}$/.test(otp.trim()) || submittingRef.current) return;
+    submittingRef.current = true;
     setSubmitting(true);
-    setFeedback(null);
     try {
       const result = await submitCheckIn(orgId, { mode: "otp", code: otp.trim() });
       if (result?.ok) {
-        setFeedback({ type: "success", text: resultText(result) });
+        success(resultText(result));
         router.push("/member");
       } else {
-        setFeedback({ type: "error", text: resultText(result ?? { ok: false }) });
+        error(resultText(result ?? { ok: false }));
       }
-    } catch {
-      setFeedback({ type: "error", text: "Lỗi kết nối. Vui lòng thử lại." });
+    } catch (caughtError) {
+      error(checkInErrorText(caughtError));
     } finally {
+      submittingRef.current = false;
       setSubmitting(false);
     }
+  }
+
+  if (!checkInWindowOpen) {
+    return (
+      <div className="space-y-5">
+        <section>
+          <p className="text-xs font-black tracking-[0.16em] text-[var(--signal)] uppercase">Điểm danh</p>
+          <h1 className="display-type mt-1 text-3xl">Ngoài giờ điểm danh</h1>
+        </section>
+        <section className="paper-panel flex min-h-[calc(100dvh-23rem)] flex-col items-center justify-center gap-4 p-6 text-center">
+          <Clock className="size-12 text-[var(--ink-soft)]" />
+          <div>
+            <p className="font-bold">Chưa thể check-in lúc này</p>
+            <p className="mt-1 text-sm text-[var(--ink-soft)]">
+              Check-in mở từ {sessionStart ?? "—"} đến {sessionEnd ?? "—"}.
+            </p>
+          </div>
+        </section>
+      </div>
+    );
   }
 
   return (
@@ -244,8 +284,6 @@ export function QrHub({ orgId }: { orgId: string }) {
         ]}
         ariaLabel="Phương thức điểm danh"
       />
-
-      <Feedback error={feedback?.type === "error" ? feedback.text : undefined} success={feedback?.type === "success" ? feedback.text : undefined} />
 
       {tab === "scan" ? (
         <div className="space-y-4">
@@ -285,25 +323,6 @@ export function QrHub({ orgId }: { orgId: string }) {
                   Quét QR Check-in
                 </PrimaryButton>
               </div>
-              {cameraError ? (
-                <div className="space-y-3 rounded-2xl border border-red-400/30 bg-red-950/40 px-4 py-4 text-sm text-red-200">
-                  <p className="flex items-center gap-2 font-semibold text-red-300">
-                    <CameraOff className="size-4 shrink-0" /> {cameraError}
-                  </p>
-                  {cameraGuide ? (
-                    <div className="space-y-2 border-t border-red-300/20 pt-3 leading-relaxed">
-                      <p className="font-bold text-[var(--ink)]">Bật quyền camera như sau:</p>
-                      <ol className="list-decimal space-y-1 pl-5">
-                        <li>Mở Cài đặt iPhone.</li>
-                        <li>Chọn Safari → Camera.</li>
-                        <li>Chọn Hỏi hoặc Cho phép.</li>
-                        <li>Quay lại Safari, tải lại trang rồi nhấn Quét QR Check-in.</li>
-                      </ol>
-                      <p className="text-xs text-red-200/80">Nếu đang dùng Chế độ riêng tư, hãy thử một tab Safari bình thường.</p>
-                    </div>
-                  ) : null}
-                </div>
-              ) : null}
             </div>
           )}
         </div>
@@ -334,4 +353,11 @@ export function QrHub({ orgId }: { orgId: string }) {
       )}
     </div>
   );
+}
+
+function checkInErrorText(error: unknown) {
+  if (error instanceof Error && error.message.includes("check_in_outside_session")) {
+    return "Đã hết khung giờ điểm danh hôm nay.";
+  }
+  return "Lỗi kết nối. Vui lòng thử lại.";
 }

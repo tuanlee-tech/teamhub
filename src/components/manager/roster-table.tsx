@@ -3,7 +3,7 @@
 import { useActionState } from "react";
 
 import { updateRosterMember, type RosterActionState } from "@/app/manager/roster/actions";
-import { Feedback, SecondaryButton, Stamp, useToast } from "@/components/ui";
+import { SecondaryButton, Stamp, useToast, useToastFeedback } from "@/components/ui";
 import { formatNumber } from "@/lib/currency";
 import { RosterMember } from "./roster-table.types";
 
@@ -31,12 +31,12 @@ export function RosterTable({
     if (nextState.success) success(nextState.success);
     return nextState;
   }, {} as RosterActionState);
+  useToastFeedback(state, { success: false });
   const isClosed = dayStatus !== "open";
 
   return (
     <form action={action}>
       <input name="workDate" type="hidden" value={workDate} />
-      <Feedback className="mb-4" error={state.error} />
       <div className="overflow-hidden rounded-xl border border-[var(--line)]" data-tour="roster-excluded-members">
         <div className="grid grid-cols-[auto_1fr_auto_auto_auto] gap-4 border-b border-[var(--line)] px-5 py-3 text-xs font-black text-[var(--ink-soft)] uppercase">
           <span>Thành viên</span>

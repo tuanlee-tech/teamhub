@@ -34,6 +34,34 @@ export function formatTimeInTimezone(iso: string, timeZone: string): string {
   return timeFormatter(timeZone).format(new Date(iso));
 }
 
+export function isWithinConfiguredTimeWindow(
+  startTime: string | null,
+  endTime: string | null,
+  timeZone: string,
+  now = new Date(),
+): boolean {
+  if (!startTime || !endTime) return false;
+
+  const parts = new Intl.DateTimeFormat("en-GB", {
+    timeZone,
+    hour: "2-digit",
+    minute: "2-digit",
+    hourCycle: "h23",
+  }).formatToParts(now);
+  const currentMinutes = Number(parts.find((part) => part.type === "hour")?.value) * 60
+    + Number(parts.find((part) => part.type === "minute")?.value);
+  const startMinutes = timeToMinutes(startTime);
+  const endMinutes = timeToMinutes(endTime);
+
+  return startMinutes !== null && endMinutes !== null && currentMinutes >= startMinutes && currentMinutes <= endMinutes;
+}
+
+function timeToMinutes(value: string) {
+  const [hours, minutes] = value.slice(0, 5).split(":").map(Number);
+  if (!Number.isInteger(hours) || !Number.isInteger(minutes)) return null;
+  return hours * 60 + minutes;
+}
+
 const WEEKDAY_FORMATTER = new Intl.DateTimeFormat("vi-VN", {
   weekday: "long",
   day: "2-digit",

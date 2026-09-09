@@ -1,11 +1,12 @@
 "use client";
 
 import Link from "next/link";
-import { useSearchParams } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import { ChevronRight } from "lucide-react";
 
 import { CurrencyText, DividedList, DividedListItem, Stamp } from "@/components/ui";
 import { SegmentedTabs } from "@/components/ui/segmented-tabs";
+import { useOrganizationRealtime } from "@/lib/realtime/organization-events";
 
 type FineRow = {
   id: string;
@@ -17,9 +18,16 @@ type FineRow = {
   workDate: string | null;
 };
 
-export function FineList({ rows }: { rows: FineRow[] }) {
+export function FineList({ organizationId, rows }: { organizationId: string; rows: FineRow[] }) {
+  const router = useRouter();
   const searchParams = useSearchParams();
   const tab = searchParams.get("tab") ?? "unpaid";
+
+  useOrganizationRealtime(organizationId, {
+    onFine: (event) => {
+      if (rows.some((row) => row.id === event.fine_id)) router.refresh();
+    },
+  });
 
   const unpaid = rows.filter((row) => row.status === "unpaid" && row.outstandingVnd > 0);
   const history = rows.filter(

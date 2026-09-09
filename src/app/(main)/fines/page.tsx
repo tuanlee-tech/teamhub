@@ -56,7 +56,7 @@ export default async function FinesPage() {
         </p>
         <h1 className="display-type mt-1 text-3xl">Khoản của bạn</h1>
       </section>
-      <FineList rows={rows} />
+      <FineList organizationId={orgId} rows={rows} />
     </div>
   );
 }

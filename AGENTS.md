@@ -7,7 +7,7 @@ Location: `src/components/ui/`
 **Luôn import từ `@/components/ui` thay vì tự viết CSS inline.**
 
 ```tsx
-import { PaperPanel, DisplayHeading, Stamp, FormInput, FormLabel, PrimaryButton, Feedback, DividedList, DividedListItem, CurrencyText, HelpButton } from "@/components/ui";
+import { PaperPanel, DisplayHeading, Stamp, FormInput, FormLabel, PrimaryButton, DividedList, DividedListItem, CurrencyText, HelpButton, useToast, useToastFeedback } from "@/components/ui";
 ```
 
 ## Các Atoms hiện có
@@ -64,11 +64,22 @@ Nút phụ với các variant màu.
 {/* fullWidth: true (default: false) */}
 ```
 
-### Feedback
-Hiển thị lỗi/thành công từ server action.
+### Toast
+Hiển thị thông báo success/error dạng snackbar native, nền đặc và không che khuất nội dung.
 ```tsx
-<Feedback error={state.error} success={state.success} />
+const { success, error } = useToast();
+success("Đã lưu thay đổi.");
+error("Không thể lưu thay đổi.");
+
+// Với server action trả về { error?, success? }:
+useToastFeedback(state);
 ```
+
+**Quy tắc bắt buộc cho feature mới:**
+- Feedback thành công/thất bại từ thao tác người dùng phải dùng `useToast()` hoặc `useToastFeedback()`.
+- Không thêm banner, `<p role="alert">`, state `message/feedback` hoặc component feedback inline mới cho success/error.
+- Có thể giữ UI inline cho trạng thái hệ thống liên tục hoặc hướng dẫn cố định, ví dụ offline, loading camera và quyền thiết bị.
+- Import Toast từ `@/components/ui`; không tự tạo hệ thống thông báo riêng.
 
 ### DividedList / DividedListItem
 List với divider giữa các item.
@@ -127,7 +138,6 @@ Nút mở product tour hoặc contextual help, có icon dấu hỏi trong vòng 
     <p className="text-xs font-black tracking-[0.16em] text-[var(--signal)] uppercase">01 / Category</p>
     <h2 className="display-type mt-2 text-3xl">Title</h2>
   </div>
-  <Feedback error={state.error} success={state.success} />
   <div className="grid gap-4 sm:grid-cols-2">
     <FormLabel>
       Label

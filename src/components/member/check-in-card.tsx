@@ -1,15 +1,14 @@
 "use client";
 
-import Link from "next/link";
+import { Clock, MapPin } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { useState } from "react";
-import { createBrowserClient } from "@supabase/ssr";
-import { MapPin, QrCode } from "lucide-react";
 
+import { Stamp, useToast } from "@/components/ui";
 import { formatNumber } from "@/lib/currency";
 import { formatTimeInTimezone } from "@/lib/domain/date";
-import { getPublicEnv } from "@/lib/env";
-import { Stamp } from "@/components/ui";
+import { useOrganizationRealtime } from "@/lib/realtime/organization-events";
+import { createClient } from "@/lib/supabase/client";
 
 type CheckInUiState = "idle" | "locating" | "confirming" | "success" | "error";
 
@@ -33,6 +32,7 @@ const stateMeta: Record<string, { label: string; variant: "success" | "error" | 
 
 export function CheckInCard({
   organizationId,
+  userId,
   timezone,
   checkedInAt,
   state,
@@ -40,9 +40,13 @@ export function CheckInCard({
   fineAmount,
   method,
   officeConfigured,
+  checkInWindowOpen,
+  sessionStart,
+  sessionEnd,
   validCheckInTime,
-}: {
+  }: {
   organizationId: string;
+  userId: string;
   timezone: string;
   checkedInAt: string | null;
   state: AttendanceState | null;
@@ -50,29 +54,34 @@ export function CheckInCard({
   fineAmount: number;
   method: "gps" | "qr" | "otp" | null;
   officeConfigured: boolean;
+  checkInWindowOpen: boolean;
+  sessionStart: string | null;
+  sessionEnd: string | null;
   validCheckInTime: string;
 }) {
   const router = useRouter();
+  const { error: toastError, success: toastSuccess } = useToast();
   const [uiState, setUiState] = useState<CheckInUiState>("idle");
-  const [message, setMessage] = useState<{ type: "success" | "error"; text: string } | null>(null);
 
   const checkedIn = !!checkedInAt;
   const isAutoLatePending = state === "late" && !checkedIn;
   const statusMeta = state ? stateMeta[state] : null;
 
-  const env = getPublicEnv();
-  const supabase = createBrowserClient(
-    env.NEXT_PUBLIC_SUPABASE_URL,
-    env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY,
-  );
+  const supabase = createClient();
+
+  useOrganizationRealtime(organizationId, {
+    onCheckIn: (event) => {
+      if (event.user_id === userId) router.refresh();
+    },
+    onFine: () => router.refresh(),
+  });
 
   async function handleGpsCheckIn() {
     if (uiState === "locating" || uiState === "confirming") return;
-    setMessage(null);
     setUiState("locating");
 
     if (!("geolocation" in navigator)) {
-      setMessage({ type: "error", text: "Trình duyệt không hỗ trợ định vị. Dùng mã QR/OTP tại kiosk." });
+      toastError("Trình duyệt không hỗ trợ định vị. Dùng mã QR/OTP tại kiosk.");
       setUiState("error");
       return;
     }
@@ -92,34 +101,28 @@ export function CheckInCard({
 
           if (result.ok) {
             const isLate = result.state === "late";
-            setMessage({
-              type: "success",
-              text: isLate
+            toastSuccess(
+              isLate
                 ? `Đã xác nhận từ server. Trễ ${result.late_minutes} phút, phạt ${formatNumber(result.fine_amount_snapshot ?? 0)} VNĐ.`
                 : "Đã xác nhận từ server, đúng giờ.",
-            });
+            );
             setUiState("success");
             router.refresh();
           } else {
-            setMessage({
-              type: "error",
-              text: reasonText(result.reason, result.distance_m),
-            });
+            toastError(reasonText(result.reason, result.distance_m));
             setUiState("error");
           }
-        } catch {
-          setMessage({ type: "error", text: "Lỗi kết nối. Vui lòng thử lại." });
+        } catch (caughtError) {
+          toastError(checkInErrorText(caughtError));
           setUiState("error");
         }
       },
       (err) => {
-        setMessage({
-          type: "error",
-          text:
-            err.code === 1
-              ? "Bạn đã từ chối quyền vị trí. Dùng mã QR/OTP tại kiosk để điểm danh."
-              : "Không thể lấy vị trí. Thử lại hoặc dùng mã QR/OTP tại kiosk.",
-        });
+        toastError(
+          err.code === 1
+            ? "Bạn đã từ chối quyền vị trí. Dùng mã QR/OTP tại kiosk để điểm danh."
+            : "Không thể lấy vị trí. Thử lại hoặc dùng mã QR/OTP tại kiosk.",
+        );
         setUiState("error");
       },
       { enableHighAccuracy: true, timeout: 12000, maximumAge: 0 },
@@ -127,8 +130,11 @@ export function CheckInCard({
   }
 
   return (
-    <section className="paper-panel space-y-5 p-5 sm:p-6">
-      <div className="flex items-start justify-between gap-3">
+    <section
+      className={`paper-panel p-5 sm:p-6 ${checkedIn ? "space-y-5" : "flex min-h-[calc(100dvh-23rem)] flex-col"
+        }`}
+    >
+      <div className={`flex items-start gap-3 ${checkedIn ? "justify-between" : "justify-center text-center"}`}>
         <div>
           <p className="text-xs font-black tracking-[0.16em] text-[var(--ink-soft)] uppercase">
             Trạng thái hôm nay
@@ -162,59 +168,65 @@ export function CheckInCard({
           ) : null}
         </dl>
       ) : (
-        <div className="space-y-4">
-          {isAutoLatePending ? (
+        <div className="flex flex-1 flex-col items-center justify-center gap-5 text-center">
+          {!checkInWindowOpen ? (
+            <div className="flex flex-col items-center gap-3 text-center">
+              <Clock className="size-20 text-[var(--ink-soft)]" />
+              <div>
+                <p className="font-bold">Ngoài giờ điểm danh</p>
+                <p className="mt-1 text-sm text-[var(--ink-soft)]">
+                  Check-in mở từ {sessionStart ?? "—"} đến {sessionEnd ?? "—"}.
+                </p>
+              </div>
+            </div>
+          ) : isAutoLatePending ? (
             <p className="rounded-xl border border-[var(--line)] bg-[var(--paper-deep)]/50 px-4 py-3 text-sm">
               Hệ thống đã ghi nhận bạn <strong>chưa điểm danh</strong>. Bấm nút bên dưới để điểm danh hoàn tất.
             </p>
           ) : null}
 
-          {message ? (
-            <div
-              role="alert"
-              className={`rounded-xl px-4 py-3 text-sm font-semibold ${
-                message.type === "success" ? "bg-emerald-950/40 text-emerald-300" : "bg-red-950/40 text-red-300"
-              }`}
-            >
-              {message.text}
-            </div>
-          ) : null}
-
-          {!officeConfigured ? (
+          {checkInWindowOpen && !officeConfigured ? (
             <p className="rounded-xl border border-[var(--line)] bg-[var(--paper-deep)]/50 px-4 py-3 text-sm text-[var(--ink-soft)]">
               Tọa độ văn phòng chưa được cấu hình ({validCheckInTime || "—"} là mốc tính trễ). Bạn vẫn có thể dùng mã
               QR/OTP tại kiosk.
             </p>
-          ) : (
-            <button
-              type="button"
-              onClick={handleGpsCheckIn}
-              disabled={uiState === "locating" || uiState === "confirming"}
-              className="flex min-h-14 w-full items-center justify-center gap-2 rounded-2xl bg-[var(--signal)] px-5 font-black text-[var(--paper)] shadow-[0_6px_0_var(--signal-dark)] transition active:translate-y-1 active:shadow-none disabled:opacity-70"
-            >
-              <MapPin className="size-5" />
-              {uiState === "locating"
-                ? "Đang lấy vị trí..."
-                : uiState === "confirming"
-                  ? "Đang xác nhận từ server..."
-                  : "Điểm danh bằng GPS"}
-            </button>
-          )}
+          ) : checkInWindowOpen ? (
+            <>
+              <button
+                type="button"
+                onClick={handleGpsCheckIn}
+                disabled={uiState === "locating" || uiState === "confirming"}
+                aria-label={uiState === "locating" ? "Đang lấy vị trí" : "Điểm danh bằng GPS"}
+                className="flex size-44 shrink-0 items-center justify-center rounded-full bg-[var(--signal)] text-[var(--paper)] shadow-[0_8px_0_var(--signal-dark),0_16px_35px_rgba(247,147,26,0.25)] transition hover:scale-[1.03] active:translate-y-2 active:shadow-[0_2px_0_var(--signal-dark),0_8px_20px_rgba(247,147,26,0.2)] disabled:cursor-wait disabled:opacity-70 sm:size-52"
+              >
+                <MapPin className="size-20" strokeWidth={2.5} />
+              </button>
+              <p className="text-sm font-bold text-[var(--ink-soft)]">
+                {uiState === "locating"
+                  ? "Đang lấy vị trí..."
+                  : uiState === "confirming"
+                    ? "Đang xác nhận..."
+                    : "Chạm để điểm danh bằng GPS"}
+              </p>
+            </>
+          ) : null}
 
-          <Link
-            href="/qr?tab=scan"
-            className="flex min-h-12 w-full items-center justify-center gap-2 rounded-2xl border border-[var(--line)] bg-[var(--white)] px-5 font-bold text-[var(--ink)] transition active:translate-y-px"
-          >
-            <QrCode className="size-5 text-[var(--signal)]" />
-            Dùng mã QR / OTP tại kiosk
-          </Link>
-          <p className="text-center text-xs text-[var(--ink-soft)]">
-            Vị trí chỉ được gửi khi bạn chủ động điểm danh. Mốc tính trễ hôm nay: {validCheckInTime}.
-          </p>
+          {checkInWindowOpen ? (
+            <p className="text-center text-xs text-[var(--ink-soft)]">
+              Vị trí chỉ được gửi khi bạn chủ động điểm danh. Mốc tính trễ hôm nay: {validCheckInTime}.
+            </p>
+          ) : null}
         </div>
       )}
     </section>
   );
+}
+
+function checkInErrorText(error: unknown) {
+  if (error instanceof Error && error.message.includes("check_in_outside_session")) {
+    return "Đã hết khung giờ điểm danh hôm nay.";
+  }
+  return "Lỗi kết nối. Vui lòng thử lại.";
 }
 
 function reasonText(reason: string | undefined, distanceM?: number) {

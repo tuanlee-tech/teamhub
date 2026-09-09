@@ -7,8 +7,7 @@ export default async function KioskPage() {
   const supabase = await createClient();
   const orgId = context.membership.organizationId;
 
-  const [{ data: org }, { data: settings }, { data: session }] = await Promise.all([
-    supabase.from("organizations").select("name").eq("id", orgId).maybeSingle(),
+  const [{ data: settings }, { data: session }] = await Promise.all([
     supabase
       .from("organization_settings")
       .select(
@@ -22,13 +21,13 @@ export default async function KioskPage() {
   return (
     <KioskScreen
       orgId={orgId}
-      orgName={org?.name ?? "TeamHub"}
       timezone={settings?.timezone ?? "Asia/Ho_Chi_Minh"}
       initialSession={(session ?? null) as {
         active: boolean;
         work_date: string | null;
         session_start_at: string | null;
         session_end_at: string | null;
+        last_successful_check_in_at?: string | null;
       } | null}
       bank={settings ? {
         bankCode: settings.bank_code,

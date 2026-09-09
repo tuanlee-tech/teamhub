@@ -9,10 +9,22 @@ try {
 } catch {
   // keep default
 }
+const serverActionOrigins = [
+  NGROK_DOMAIN,
+  teamhubHost,
+  "localhost:3000",
+  "127.0.0.1:3000",
+];
 
 const nextConfig: NextConfig = {
   // Allow HMR / dev overlay when served through ngrok (top-level in Next 16)
   allowedDevOrigins: [NGROK_DOMAIN, teamhubHost],
+  experimental: {
+    serverActions: {
+      // Trust the local origin when a dev tunnel forwards requests to Next.
+      allowedOrigins: serverActionOrigins,
+    },
+  },
   turbopack: {
     root: process.cwd(),
   },

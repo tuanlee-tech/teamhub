@@ -3,7 +3,7 @@
 import { startTransition, useActionState, useState } from "react";
 
 import { setAutoApprove } from "@/app/manager/actions";
-import { Feedback, Toggle } from "@/components/ui";
+import { Toggle, useToastFeedback } from "@/components/ui";
 
 export function AutoApproveToggle({ enabled }: { enabled: boolean }) {
   const [state, action, isPending] = useActionState(
@@ -13,6 +13,7 @@ export function AutoApproveToggle({ enabled }: { enabled: boolean }) {
     null,
   );
   const [checked, setChecked] = useState(enabled);
+  useToastFeedback(state ?? {});
 
   return (
     <div className="space-y-3">
@@ -31,7 +32,6 @@ export function AutoApproveToggle({ enabled }: { enabled: boolean }) {
           startTransition(() => action(next));
         }}
       />
-      <Feedback error={state?.error} success={state?.success} />
     </div>
   );
 }

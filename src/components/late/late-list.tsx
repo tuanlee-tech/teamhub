@@ -1,7 +1,7 @@
 "use client";
 
 import { useRouter, useSearchParams } from "next/navigation";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { CalendarDays, RefreshCw, ScanLine } from "lucide-react";
 
 import { PaymentQrPanel } from "@/components/qr/payment-qr-panel";
@@ -57,6 +57,7 @@ export function LateList({
   const tab = searchParams.get("tab") === "paid" ? "paid" : "unpaid";
   const [expanded, setExpanded] = useState<LateRow | null>(null);
   const [refreshing, setRefreshing] = useState(false);
+  const refreshTimerRef = useRef<number | null>(null);
 
   const onDateChange = useCallback(
     (next: string) => {
@@ -70,8 +71,16 @@ export function LateList({
   const refresh = useCallback(() => {
     setRefreshing(true);
     router.refresh();
-    window.setTimeout(() => setRefreshing(false), 800);
+    if (refreshTimerRef.current !== null) window.clearTimeout(refreshTimerRef.current);
+    refreshTimerRef.current = window.setTimeout(() => {
+      refreshTimerRef.current = null;
+      setRefreshing(false);
+    }, 800);
   }, [router]);
+
+  useEffect(() => () => {
+    if (refreshTimerRef.current !== null) window.clearTimeout(refreshTimerRef.current);
+  }, []);
 
   useEffect(() => {
     const onVisible = () => {

@@ -4,7 +4,7 @@ import { useActionState, useRef, useState } from "react";
 
 import { upsertPenaltyTier, type ManagerActionState } from "@/app/manager/actions";
 import { formatCurrencyInput, parseCurrencyInput } from "@/lib/currency";
-import { Feedback, FormInput, FormLabel, PrimaryButton, useToast } from "@/components/ui";
+import { FormInput, FormLabel, PrimaryButton, useToast, useToastFeedback } from "@/components/ui";
 
 export function PenaltyForm({ tierId, initialThresholdMinutes, initialAmountVnd, onSuccess }: {
   tierId?: string;
@@ -31,6 +31,7 @@ export function PenaltyForm({ tierId, initialThresholdMinutes, initialAmountVnd,
     }
     return nextState;
   }, {} as ManagerActionState);
+  useToastFeedback(state, { success: false });
 
   function handleAmountChange(e: React.ChangeEvent<HTMLInputElement>) {
     const formatted = formatCurrencyInput(e.target.value);
@@ -53,7 +54,6 @@ export function PenaltyForm({ tierId, initialThresholdMinutes, initialAmountVnd,
         </FormLabel>
         <PrimaryButton>{tierId ? "Lưu thay đổi" : "Thêm khung phạt"}</PrimaryButton>
       </div>
-      <Feedback className="mt-4" error={state.error} />
     </form>
   );
 }

@@ -3,7 +3,7 @@
 import { useActionState, useState } from "react";
 
 import { deletePenaltyTier, type ManagerActionState } from "@/app/manager/actions";
-import { Feedback, Modal, SecondaryButton, useToast } from "@/components/ui";
+import { Modal, SecondaryButton, useToast, useToastFeedback } from "@/components/ui";
 
 export function DeletePenaltyButton({ tierId }: { tierId: string }) {
   const [open, setOpen] = useState(false);
@@ -16,6 +16,7 @@ export function DeletePenaltyButton({ tierId }: { tierId: string }) {
     }
     return nextState;
   }, {} as ManagerActionState);
+  useToastFeedback(state, { success: false });
 
   return (
     <>
@@ -28,7 +29,6 @@ export function DeletePenaltyButton({ tierId }: { tierId: string }) {
       >
         <form action={action} className="flex flex-col gap-3 p-6 sm:flex-row sm:items-center sm:justify-end sm:p-8">
           <input name="tierId" type="hidden" value={tierId} />
-          <Feedback className="order-first sm:order-none sm:mr-auto" error={state.error} />
           <SecondaryButton className="h-10 min-h-10 min-w-24 py-0" disabled={pending} onClick={() => setOpen(false)} type="button">Hủy</SecondaryButton>
           <SecondaryButton className="h-10 min-h-10 min-w-48 py-0 sm:max-w-xs" disabled={pending} type="submit" variant="destructive">{pending ? "Đang xóa..." : "Xóa khung phạt"}</SecondaryButton>
         </form>

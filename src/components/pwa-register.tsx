@@ -19,7 +19,7 @@ export function PwaRegister() {
           caches.keys().then((keys) => Promise.all(keys.map((key) => caches.delete(key)))),
         ]).then(() => {
           // The first reload may still be controlled by the old worker. Reload once
-          // after unregistering so Safari requests the current Next.js bundle.
+          // after unregistering so browsers request the current Next.js bundle.
           window.location.reload();
         });
       }

@@ -10,28 +10,11 @@ import {
   type ManagerActionState,
 } from "@/app/manager/actions";
 import { SEPAY_BANKS } from "@/lib/banks";
-import { Toggle } from "@/components/ui";
+import { Toggle, useToast, useToastFeedback } from "@/components/ui";
 
 const initialState: ManagerActionState = {};
 const inputClassName =
   "mt-2 h-12 w-full rounded-xl border border-[var(--line)] bg-[var(--white)] px-4 font-normal text-[var(--ink)] outline-none transition placeholder:text-[var(--ink-soft)] focus:border-[var(--signal)] focus:ring-3 focus:ring-[var(--signal)]/20";
-
-function Feedback({ state }: { state: ManagerActionState }) {
-  if (!state.error && !state.success) {
-    return null;
-  }
-
-  return (
-    <p
-      aria-live="polite"
-      className={`rounded-xl px-4 py-3 text-sm font-semibold ${
-        state.error ? "bg-red-950/40 text-red-300" : "bg-emerald-950/40 text-emerald-300"
-      }`}
-    >
-      {state.error ?? state.success}
-    </p>
-  );
-}
 
 function SaveButton() {
   const { pending } = useFormStatus();
@@ -56,10 +39,10 @@ export type AttendanceSettingsValues = {
 
 export function AttendanceSettingsForm({ values }: { values: AttendanceSettingsValues }) {
   const [state, action] = useActionState(updateAttendanceSettings, initialState);
+  const { error, success } = useToast();
+  useToastFeedback(state);
   const [lat, setLat] = useState(values.officeLatitude != null ? String(values.officeLatitude) : "");
   const [lng, setLng] = useState(values.officeLongitude != null ? String(values.officeLongitude) : "");
-  const [geoStatus, setGeoStatus] = useState<string | null>(null);
-  const [geoWarning, setGeoWarning] = useState(false);
   const [locating, setLocating] = useState(false);
   const weekdays = [
     [1, "T2"],
@@ -73,13 +56,10 @@ export function AttendanceSettingsForm({ values }: { values: AttendanceSettingsV
 
   const handleGetLocation = () => {
     if (!navigator.geolocation) {
-      setGeoWarning(true);
-      setGeoStatus("Trình duyệt không hỗ trợ định vị.");
+      error("Trình duyệt không hỗ trợ định vị.");
       return;
     }
     setLocating(true);
-    setGeoWarning(false);
-    setGeoStatus("Đang lấy vị trí...");
     navigator.geolocation.getCurrentPosition(
       (pos) => {
         const { latitude, longitude, accuracy } = pos.coords;
@@ -87,13 +67,11 @@ export function AttendanceSettingsForm({ values }: { values: AttendanceSettingsV
         setLng(String(longitude));
         const round = Math.round(accuracy);
         if (round >= 100) {
-          setGeoWarning(true);
-          setGeoStatus(
+          error(
             `⚠️ Sai số ±${round}m quá lớn — vị trí có thể lệch hàng km, đừng lưu. Ra gần cửa sổ hoặc ngoài trời lấy lại.`,
           );
         } else {
-          setGeoWarning(false);
-          setGeoStatus(`Đã lấy: ${latitude.toFixed(6)}, ${longitude.toFixed(6)} (±${round}m) — nhớ Lưu cấu hình`);
+          success(`Đã lấy vị trí ±${round}m. Kiểm tra tọa độ rồi lưu cấu hình.`);
         }
         setLocating(false);
       },
@@ -104,8 +82,7 @@ export function AttendanceSettingsForm({ values }: { values: AttendanceSettingsV
             : err.code === 2
               ? "Không xác định được vị trí."
               : "Hết thời gian lấy vị trí.";
-        setGeoWarning(true);
-        setGeoStatus(msg);
+        error(msg);
         setLocating(false);
       },
       { enableHighAccuracy: true, timeout: 15000, maximumAge: 0 },
@@ -118,7 +95,6 @@ export function AttendanceSettingsForm({ values }: { values: AttendanceSettingsV
         <p className="text-xs font-black tracking-[0.16em] text-[var(--signal)] uppercase">01 / Điểm danh</p>
         <h2 className="display-type mt-2 text-3xl">Ca làm và văn phòng</h2>
       </div>
-      <Feedback state={state} />
       <div className="grid gap-4 sm:grid-cols-2">
         <label className="text-sm font-bold sm:col-span-2">
           Múi giờ IANA
@@ -176,21 +152,6 @@ export function AttendanceSettingsForm({ values }: { values: AttendanceSettingsV
             <span aria-hidden>📍</span>
             {locating ? "Đang lấy vị trí..." : "Lấy vị trí"}
           </button>
-          {geoStatus ? (
-            geoWarning ? (
-              <div
-                aria-live="polite"
-                className="mt-2 rounded-xl border-2 border-red-800 bg-red-950/40 px-4 py-3 text-sm font-semibold text-red-300 shadow-sm"
-              >
-                <p className="flex items-start gap-2">
-                  <span aria-hidden className="inline-block scale-125">⚠️</span>
-                  <span>{geoStatus}</span>
-                </p>
-              </div>
-            ) : (
-              <p className="mt-2 rounded-xl bg-[var(--paper)] px-4 py-3 text-sm font-medium text-[var(--ink-soft)]">{geoStatus}</p>
-            )
-          ) : null}
           <p className="mt-1 text-xs leading-relaxed text-[var(--ink-soft)]">
             Chạy qua HTTPS và cấp quyền vị trí. Nên dùng <strong className="font-bold text-[var(--ink)]">điện thoại có GPS thật</strong> —
             đứng gần cửa sổ hoặc ngoài trời, tránh laptop (Wi-Fi/IP) dễ lệch hàng km. Chỉ nên Lưu khi sai số hiển thị dưới 100m.
@@ -223,6 +184,7 @@ export type BankSettingsValues = {
 
 export function BankSettingsForm({ values }: { values: BankSettingsValues }) {
   const [state, action] = useActionState(updateBankSettings, initialState);
+  useToastFeedback(state);
   const [bankCode, setBankCode] = useState(values.bankCode);
   const [bankAccountNumber, setBankAccountNumber] = useState(values.bankAccountNumber);
   const [bankAccountHolder, setBankAccountHolder] = useState(values.bankAccountHolder);
@@ -251,7 +213,6 @@ export function BankSettingsForm({ values }: { values: BankSettingsValues }) {
         <p className="text-xs font-black tracking-[0.16em] text-[var(--signal)] uppercase">02 / Thanh toán</p>
         <h2 className="display-type mt-2 text-3xl">Ngân hàng và VietQR</h2>
       </div>
-      <Feedback state={state} />
       <div className="grid gap-4 sm:grid-cols-2">
         <label className="text-sm font-bold sm:col-span-2">
           Ngân hàng
@@ -329,6 +290,7 @@ export type TtsSettingsValues = {
 
 export function TtsSettingsForm({ values }: { values: TtsSettingsValues }) {
   const [state, action] = useActionState(updateTtsSettings, initialState);
+  useToastFeedback(state);
   const [quietEnabled, setQuietEnabled] = useState(values.quietEnabled);
   const [speechRate, setSpeechRate] = useState(values.speechRate);
   const [speechPitch, setSpeechPitch] = useState(values.speechPitch);
@@ -368,8 +330,11 @@ export function TtsSettingsForm({ values }: { values: TtsSettingsValues }) {
     if (typeof window !== "undefined" && "speechSynthesis" in window) {
       window.speechSynthesis.addEventListener("voiceschanged", loadVoices);
       // Some browsers need a kick
-      setTimeout(loadVoices, 500);
-      return () => window.speechSynthesis.removeEventListener("voiceschanged", loadVoices);
+      const voiceTimer = window.setTimeout(loadVoices, 500);
+      return () => {
+        window.clearTimeout(voiceTimer);
+        window.speechSynthesis.removeEventListener("voiceschanged", loadVoices);
+      };
     }
   }, []);
 
@@ -382,7 +347,6 @@ export function TtsSettingsForm({ values }: { values: TtsSettingsValues }) {
         <p className="text-xs font-black tracking-[0.16em] text-[var(--signal)] uppercase">03 / Âm thanh</p>
         <h2 className="display-type mt-2 text-3xl">Giọng MC</h2>
       </div>
-      <Feedback state={state} />
       <label className="block text-sm font-bold">
         Phong cách
         <select className={inputClassName} defaultValue={values.personality} name="personality">

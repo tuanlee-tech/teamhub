@@ -1,4 +1,5 @@
 import { redirect } from "next/navigation";
+import { cache } from "react";
 
 import { createClient } from "@/lib/supabase/server";
 
@@ -23,7 +24,7 @@ export type ActiveMembershipContext = Omit<MembershipContext, "membership"> & {
   membership: NonNullable<MembershipContext["membership"]> & { status: "active" };
 };
 
-export async function getMembershipContext(): Promise<MembershipContext | null> {
+export const getMembershipContext = cache(async (): Promise<MembershipContext | null> => {
   const supabase = await createClient();
   const {
     data: { user },
@@ -66,7 +67,7 @@ export async function getMembershipContext(): Promise<MembershipContext | null> 
         }
       : null,
   };
-}
+});
 
 export async function requireActiveMember(
   requiredRole?: "manager" | "kiosk",

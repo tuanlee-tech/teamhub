@@ -1,6 +1,6 @@
 import { CheckInCard } from "@/components/member/check-in-card";
 import { requireActiveMember } from "@/lib/auth";
-import { todayInTimezone } from "@/lib/domain/date";
+import { isWithinConfiguredTimeWindow, todayInTimezone } from "@/lib/domain/date";
 import { createClient } from "@/lib/supabase/server";
 
 export default async function MemberHomePage() {
@@ -26,19 +26,12 @@ export default async function MemberHomePage() {
   const timezone = orgSettings?.timezone ?? "Asia/Ho_Chi_Minh";
   const workDate = todayInTimezone(timezone);
 
-  const { data: dayRow } = await supabase
-    .from("attendance_days")
-    .select("id, work_date, valid_check_in_at, auto_late_at, status")
-    .eq("organization_id", orgId)
-    .eq("work_date", workDate)
-    .maybeSingle();
-
   const { data: memberRecord } = await supabase
     .from("attendance_records")
-    .select("state, checked_in_at, late_minutes, check_in_method, fine_amount_snapshot")
+    .select("state, checked_in_at, late_minutes, check_in_method, fine_amount_snapshot, attendance_days!inner(work_date)")
     .eq("organization_id", orgId)
     .eq("user_id", context.userId)
-    .eq("attendance_day_id", dayRow?.id ?? "")
+    .eq("attendance_days.work_date", workDate)
     .maybeSingle();
 
   const officeConfigured =
@@ -58,6 +51,7 @@ export default async function MemberHomePage() {
 
       <CheckInCard
         organizationId={orgId}
+        userId={context.userId}
         timezone={timezone}
         checkedInAt={memberRecord?.checked_in_at ?? null}
         state={memberRecord?.state ?? null}
@@ -65,6 +59,13 @@ export default async function MemberHomePage() {
         fineAmount={memberRecord?.fine_amount_snapshot ?? 0}
         method={memberRecord?.check_in_method ?? null}
         officeConfigured={officeConfigured}
+        checkInWindowOpen={isWithinConfiguredTimeWindow(
+          orgSettings?.session_start ?? null,
+          orgSettings?.session_end ?? null,
+          timezone,
+        )}
+        sessionStart={orgSettings?.session_start?.slice(0, 5) ?? null}
+        sessionEnd={orgSettings?.session_end?.slice(0, 5) ?? null}
         validCheckInTime={orgSettings?.valid_check_in_time?.slice(0, 5) ?? "09:00"}
       />
     </div>

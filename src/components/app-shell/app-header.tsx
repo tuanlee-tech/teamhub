@@ -1,15 +1,13 @@
 import Link from "next/link";
+import { Suspense } from "react";
 import { LogOut } from "lucide-react";
 
 import { signOut } from "@/app/(auth)/actions";
+import { getMembershipContext } from "@/lib/auth";
 
 import { Logo } from "@/components/ui";
 
-type AppHeaderProps = {
-  managerLink?: boolean;
-};
-
-export function AppHeader({ managerLink }: AppHeaderProps) {
+export function AppHeader() {
   return (
     <header className="sticky top-0 z-40 border-b border-[var(--line)] bg-[var(--paper)]/85 backdrop-blur-md">
       <div className="mx-auto flex h-14 max-w-5xl items-center justify-between gap-3 px-4">
@@ -17,14 +15,9 @@ export function AppHeader({ managerLink }: AppHeaderProps) {
           <Logo className="h-8 w-auto shrink-0" />
         </Link>
         <div className="flex items-center gap-2">
-          {managerLink ? (
-            <Link
-              href="/manager"
-              className="rounded-full bg-[var(--signal)] px-3 py-1.5 text-xs font-bold text-[var(--white)]"
-            >
-              Quản lý
-            </Link>
-          ) : null}
+          <Suspense fallback={null}>
+            <ManagerLink />
+          </Suspense>
           <form action={signOut}>
             <button
               type="submit"
@@ -38,5 +31,19 @@ export function AppHeader({ managerLink }: AppHeaderProps) {
         </div>
       </div>
     </header>
+  );
+}
+
+async function ManagerLink() {
+  const context = await getMembershipContext();
+  if (context?.membership?.role !== "manager") return null;
+
+  return (
+    <Link
+      href="/manager"
+      className="rounded-full bg-[var(--signal)] px-3 py-1.5 text-xs font-bold text-[var(--white)]"
+    >
+      Quản lý
+    </Link>
   );
 }

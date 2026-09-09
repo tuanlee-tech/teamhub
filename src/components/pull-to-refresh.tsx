@@ -10,9 +10,11 @@ export function PullToRefresh() {
   const router = useRouter();
   const startYRef = useRef<number | null>(null);
   const pullDistanceRef = useRef(0);
+  const refreshingRef = useRef(false);
   const [mounted, setMounted] = useState(false);
   const [pullDistance, setPullDistance] = useState(0);
   const [refreshing, setRefreshing] = useState(false);
+  const refreshTimerRef = useRef<number | null>(null);
 
   useEffect(() => {
     // Do not render browser-only pull state during SSR hydration.
@@ -28,17 +30,18 @@ export function PullToRefresh() {
     };
 
     const handleTouchStart = (event: TouchEvent) => {
-      if (window.scrollY === 0 && event.touches.length === 1) {
+      if (!refreshingRef.current && window.scrollY === 0 && event.touches.length === 1) {
         startYRef.current = event.touches[0].clientY;
       }
     };
 
     const handleTouchMove = (event: TouchEvent) => {
-      if (startYRef.current === null || refreshing || event.touches.length !== 1) return;
+      if (startYRef.current === null || refreshingRef.current || event.touches.length !== 1) return;
 
       const distance = event.touches[0].clientY - startYRef.current;
       if (distance <= 0 || window.scrollY > 0) {
         pullDistanceRef.current = 0;
+        startYRef.current = null;
         setBodyPadding(0);
         setPullDistance(0);
         return;
@@ -51,34 +54,48 @@ export function PullToRefresh() {
       event.preventDefault();
     };
 
-    const handleTouchEnd = () => {
-      const shouldRefresh = pullDistanceRef.current >= TRIGGER_DISTANCE * 0.5;
+    const resetPull = () => {
       startYRef.current = null;
       pullDistanceRef.current = 0;
       setBodyPadding(0);
       setPullDistance(0);
+    };
 
-      if (!shouldRefresh || refreshing) return;
+    const handleTouchEnd = () => {
+      const shouldRefresh = pullDistanceRef.current >= TRIGGER_DISTANCE * 0.5;
+      resetPull();
+
+      if (!shouldRefresh || refreshingRef.current) return;
+      refreshingRef.current = true;
       setRefreshing(true);
       window.dispatchEvent(new Event("teamhub:pull-refresh"));
       startTransition(() => router.refresh());
-      window.setTimeout(() => setRefreshing(false), 900);
+      refreshTimerRef.current = window.setTimeout(() => {
+        refreshTimerRef.current = null;
+        refreshingRef.current = false;
+        setRefreshing(false);
+      }, 900);
+    };
+
+    const handleTouchCancel = () => {
+      resetPull();
     };
 
     document.addEventListener("touchstart", handleTouchStart, { passive: true });
     document.addEventListener("touchmove", handleTouchMove, { passive: false });
     document.addEventListener("touchend", handleTouchEnd, { passive: true });
-    document.addEventListener("touchcancel", handleTouchEnd, { passive: true });
+    document.addEventListener("touchcancel", handleTouchCancel, { passive: true });
 
     return () => {
       document.removeEventListener("touchstart", handleTouchStart);
       document.removeEventListener("touchmove", handleTouchMove);
       document.removeEventListener("touchend", handleTouchEnd);
-      document.removeEventListener("touchcancel", handleTouchEnd);
+      document.removeEventListener("touchcancel", handleTouchCancel);
+      if (refreshTimerRef.current !== null) window.clearTimeout(refreshTimerRef.current);
       body.style.paddingTop = originalPaddingTop;
       body.style.transition = originalTransition;
     };
-  }, [refreshing, router]);
+  }, [router]);
 
   const visible = refreshing || pullDistance > 0;
   const ready = pullDistance >= TRIGGER_DISTANCE * 0.5;

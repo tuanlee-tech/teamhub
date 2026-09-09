@@ -17,11 +17,13 @@
 
 html {
   background: var(--paper);
+  overscroll-behavior-y: none;
 }
 
 body {
   min-height: 100vh;
   margin: 0;
+  overscroll-behavior-y: none;
   color: var(--ink);
   background:
     linear-gradient(rgba(244, 240, 230, 0.05) 1px, transparent 1px),
