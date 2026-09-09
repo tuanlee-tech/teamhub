@@ -31,7 +31,7 @@ function Feedback({ state }: { state: AuthActionState }) {
     <p
       aria-live="polite"
       className={`rounded-xl px-4 py-3 text-sm font-semibold ${
-        state.error ? "bg-red-50 text-red-800" : "bg-emerald-50 text-emerald-800"
+        state.error ? "bg-red-950/40 text-red-300" : "bg-emerald-950/40 text-emerald-300"
       }`}
     >
       {state.error ?? state.success}
@@ -40,7 +40,7 @@ function Feedback({ state }: { state: AuthActionState }) {
 }
 
 const inputClassName =
-  "mt-2 h-12 w-full rounded-xl border border-[var(--line)] bg-white px-4 font-normal outline-none transition focus:border-[var(--signal)] focus:ring-3 focus:ring-red-100";
+  "mt-2 h-12 w-full rounded-xl border border-[var(--line)] bg-[var(--white)] px-4 font-normal text-[var(--ink)] outline-none transition placeholder:text-[var(--ink-soft)] focus:border-[var(--signal)] focus:ring-3 focus:ring-[var(--signal)]/20";
 
 export function LoginForm() {
   const [state, action] = useActionState(loginWithUsername, initialState);
@@ -49,8 +49,8 @@ export function LoginForm() {
     <form action={action} className="mt-8 space-y-4">
       <Feedback state={state} />
       <label className="block text-sm font-bold" htmlFor="username">
-        Username
-        <input autoComplete="username" className={inputClassName} id="username" name="username" required />
+        Username hoặc email
+        <input autoCapitalize="none" autoComplete="username" className={inputClassName} id="username" name="username" placeholder="username hoặc email" required />
       </label>
       <label className="block text-sm font-bold" htmlFor="password">
         Mật khẩu

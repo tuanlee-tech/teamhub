@@ -50,7 +50,7 @@ export default async function PenaltiesPage() {
         <PaperPanel className="overflow-hidden p-6 sm:p-8">
           <PenaltyFormPanel tourTarget="penalties-add" />
         </PaperPanel>
-        <p className="rounded-xl border border-[var(--line)] bg-white px-4 py-3 text-sm leading-relaxed text-[var(--ink-soft)]" data-tour="penalties-highest-tier">
+        <p className="rounded-xl border border-[var(--line)] bg-[var(--white)] px-4 py-3 text-sm leading-relaxed text-[var(--ink-soft)]" data-tour="penalties-highest-tier">
           Chỉ áp dụng khung phạt cao nhất đã đạt được, không cộng dồn các khung thấp hơn.
         </p>
         <section data-tour="penalties-list">

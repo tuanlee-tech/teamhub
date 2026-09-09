@@ -2,6 +2,8 @@ import { redirect } from "next/navigation";
 
 import { createClient } from "@/lib/supabase/server";
 
+export type UserRole = "manager" | "member" | "kiosk";
+
 export type MembershipContext = {
   userId: string;
   profile: {
@@ -11,7 +13,7 @@ export type MembershipContext = {
   };
   membership: {
     organizationId: string;
-    role: "manager" | "member";
+    role: UserRole;
     status: "pending" | "active" | "rejected";
     isActive: boolean;
   } | null;
@@ -66,7 +68,9 @@ export async function getMembershipContext(): Promise<MembershipContext | null> 
   };
 }
 
-export async function requireActiveMember(requiredRole?: "manager"): Promise<ActiveMembershipContext> {
+export async function requireActiveMember(
+  requiredRole?: "manager" | "kiosk",
+): Promise<ActiveMembershipContext> {
   const context = await getMembershipContext();
 
   if (!context) {
@@ -85,7 +89,34 @@ export async function requireActiveMember(requiredRole?: "manager"): Promise<Act
     redirect("/pending");
   }
 
+  // Kiosk accounts never use the employee app; they land on their own screen.
+  if (context.membership.role === "kiosk") {
+    redirect("/kiosk");
+  }
+
   if (requiredRole === "manager" && context.membership.role !== "manager") {
+    redirect("/member");
+  }
+
+  return context as ActiveMembershipContext;
+}
+
+export async function requireKiosk(): Promise<ActiveMembershipContext> {
+  const context = await getMembershipContext();
+
+  if (!context) {
+    redirect("/login");
+  }
+
+  if (
+    !context.membership ||
+    context.membership.status !== "active" ||
+    !context.membership.isActive
+  ) {
+    redirect("/pending");
+  }
+
+  if (context.membership.role !== "kiosk") {
     redirect("/member");
   }
 

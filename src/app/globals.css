@@ -1,14 +1,14 @@
 @import "tailwindcss";
 
 :root {
-  --paper: #f4f0e6;
-  --paper-deep: #e8e0cf;
-  --ink: #102a2c;
-  --ink-soft: #416064;
-  --signal: #e14b32;
-  --signal-dark: #a72e20;
-  --line: rgba(16, 42, 44, 0.18);
-  --white: #fffdf7;
+  --paper: #0d1117;
+  --paper-deep: #161b22;
+  --ink: #f4f0e6;
+  --ink-soft: #a9b3b8;
+  --signal: #f7931a;
+  --signal-dark: #c77415;
+  --line: rgba(244, 240, 230, 0.14);
+  --white: #102a2c;
 }
 
 * {
@@ -24,15 +24,14 @@ body {
   margin: 0;
   color: var(--ink);
   background:
-    linear-gradient(rgba(16, 42, 44, 0.035) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(16, 42, 44, 0.035) 1px, transparent 1px),
+    linear-gradient(rgba(244, 240, 230, 0.05) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(244, 240, 230, 0.05) 1px, transparent 1px),
     var(--paper);
   background-size: 24px 24px;
   font-family: Arial, Helvetica, sans-serif;
 }
 
 a {
-  color: inherit;
   text-decoration: none;
 }
 
@@ -49,17 +48,17 @@ textarea {
 }
 
 .display-type {
-  font-family: Impact, Haettenschweiler, "Arial Narrow Bold", sans-serif;
-  font-weight: 900;
-  letter-spacing: -0.035em;
+  font-family: var(--font-display), "Arial Narrow", Arial, sans-serif;
+  font-weight: 700;
+  letter-spacing: -0.02em;
   text-transform: uppercase;
 }
 
 .paper-panel {
   border: 1px solid var(--line);
   border-radius: 18px;
-  background: rgba(255, 253, 247, 0.78);
-  box-shadow: 0 18px 50px rgba(16, 42, 44, 0.08);
+  background: rgba(16, 42, 44, 0.55);
+  box-shadow: 0 18px 50px rgba(0, 0, 0, 0.45);
   backdrop-filter: blur(12px);
 }
 
@@ -97,12 +96,12 @@ textarea {
 
 .route-card:hover {
   transform: translateY(-4px) rotate(-0.3deg);
-  box-shadow: 0 20px 45px rgba(16, 42, 44, 0.12);
+  box-shadow: 0 20px 45px rgba(0, 0, 0, 0.55);
 }
 
 .route-card:focus-visible,
 .primary-action:focus-visible {
-  outline: 3px solid rgba(225, 75, 50, 0.35);
+  outline: 3px solid rgba(247, 147, 26, 0.35);
   outline-offset: 4px;
 }
 
@@ -135,14 +134,14 @@ textarea {
   border-radius: 18px;
   background: var(--white);
   color: var(--ink);
-  box-shadow: 0 18px 50px rgba(16, 42, 44, 0.18);
+  box-shadow: 0 18px 50px rgba(0, 0, 0, 0.55);
   font-family: Arial, Helvetica, sans-serif;
 }
 
 .driver-popover-title {
-  font-family: Impact, Haettenschweiler, "Arial Narrow Bold", sans-serif;
+  font-family: var(--font-display), "Arial Narrow", Arial, sans-serif;
   font-size: 1.5rem;
-  letter-spacing: -0.035em;
+  letter-spacing: -0.02em;
   text-transform: uppercase;
 }
 
@@ -181,11 +180,31 @@ textarea {
   background: var(--white);
 }
 
+.nav-callout {
+  animation: nav-callout-pulse 2.6s ease-in-out infinite;
+}
+
+@keyframes nav-callout-pulse {
+  0%,
+  100% {
+    transform: translateY(0);
+    box-shadow: 0 8px 24px rgba(247, 147, 26, 0.55);
+  }
+  50% {
+    transform: translateY(-6px);
+    box-shadow: 0 16px 36px rgba(247, 147, 26, 0.7);
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,
   *::after {
     scroll-behavior: auto !important;
     transition-duration: 0.01ms !important;
+  }
+
+  .nav-callout {
+    animation: none;
   }
 }

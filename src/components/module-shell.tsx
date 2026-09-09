@@ -1,7 +1,7 @@
 import Link from "next/link";
 
 import { signOut } from "@/app/(auth)/actions";
-import { SecondaryButton } from "@/components/ui";
+import { Logo, SecondaryButton } from "@/components/ui";
 
 type ModuleShellProps = {
   eyebrow: string;
@@ -15,10 +15,7 @@ export function ModuleShell({ eyebrow, title, description, children }: ModuleShe
     <main className="mx-auto min-h-screen max-w-7xl px-5 py-6 sm:px-8 lg:px-12 lg:py-10">
       <header className="flex items-center justify-between border-b border-[var(--line)] pb-5">
         <Link className="flex items-center gap-3" href="/">
-          <span className="grid size-10 place-items-center rounded-full bg-[var(--ink)] text-sm font-black text-[var(--paper)]">
-            TH
-          </span>
-          <span className="display-type text-lg">TeamHub</span>
+          <Logo className="h-9 w-auto" />
         </Link>
         <div className="flex items-center gap-4">
           <span className="stamp text-[var(--ink-soft)]">{eyebrow}</span>

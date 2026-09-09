@@ -23,7 +23,7 @@ export function RosterDateSelect({ days, selectedDate }: { days: RosterDay[]; se
           defaultValue={selectedDate}
           name="date"
           onChange={(event) => event.currentTarget.form?.requestSubmit()}
-          className="mt-2 h-12 w-full max-w-xs cursor-pointer rounded-xl border border-[var(--line)] bg-white px-4"
+          className="mt-2 h-12 w-full max-w-xs cursor-pointer rounded-xl border border-[var(--line)] bg-[var(--white)] px-4 text-[var(--ink)]"
         >
           {days.length === 0 ? <option value={selectedDate}>Chưa có ngày làm việc</option> : null}
           {days.map((d) => (

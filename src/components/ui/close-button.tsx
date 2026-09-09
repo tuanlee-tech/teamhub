@@ -8,7 +8,7 @@ export function CloseButton(props: ButtonHTMLAttributes<HTMLButtonElement>) {
   return (
     <SecondaryButton
       aria-label="Đóng"
-      className="h-10 w-10 min-h-10 min-w-10 rounded-full !border-transparent !bg-[rgba(225,75,50,0.06)] !p-0 text-[var(--signal)] !shadow-[0_3px_0_rgba(225,75,50,0.28)] hover:!bg-[rgba(225,75,50,0.14)] hover:text-[var(--signal)]"
+      className="h-10 w-10 min-h-10 min-w-10 rounded-full !border-transparent !bg-[rgba(247,147,26,0.08)] !p-0 text-[var(--signal)] !shadow-[0_3px_0_rgba(247,147,26,0.35)] hover:!bg-[rgba(247,147,26,0.16)] hover:text-[var(--signal)]"
       title="Đóng"
       type="button"
       {...props}

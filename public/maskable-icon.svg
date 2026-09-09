@@ -1,6 +1,13 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
-  <rect width="512" height="512" fill="#102a2c"/>
-  <circle cx="256" cy="256" r="138" fill="#f4f0e6"/>
-  <path d="M256 156v110l72 42" fill="none" stroke="#e14b32" stroke-linecap="round" stroke-linejoin="round" stroke-width="32"/>
-  <circle cx="256" cy="256" r="20" fill="#102a2c"/>
+  <rect width="512" height="512" fill="#000000"/>
+  <g text-anchor="middle" transform="translate(0 32)">
+    <style>
+      .m-team{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;font-weight:bold;font-size:126px;fill:#f4f0e6}
+      .m-hubbg{fill:#f7931a;rx:16px}
+      .m-hub{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;font-weight:bold;font-size:122px;fill:#000000}
+    </style>
+    <text x="256" y="172" class="m-team">Team</text>
+    <rect x="110" y="220" width="292" height="152" rx="16" class="m-hubbg"/>
+    <text x="256" y="338" class="m-hub">hub</text>
+  </g>
 </svg>

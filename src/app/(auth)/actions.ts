@@ -22,8 +22,19 @@ const usernameSchema = z
 
 const passwordSchema = z.string().min(8, "Mật khẩu cần ít nhất 8 ký tự.").max(72);
 
+const loginIdentifierSchema = z
+  .string()
+  .trim()
+  .toLowerCase()
+  .min(3, "Username hoặc email quá ngắn.")
+  .max(254, "Username hoặc email quá dài.")
+  .refine(
+    (value) => /^[a-z0-9][a-z0-9._-]*$/.test(value) || /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value),
+    "Nhập username hoặc email hợp lệ.",
+  );
+
 const loginSchema = z.object({
-  username: usernameSchema,
+  username: loginIdentifierSchema,
   password: z.string().min(1),
 });
 

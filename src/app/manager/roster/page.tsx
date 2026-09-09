@@ -193,7 +193,7 @@ export default async function RosterPage({
           <RosterTour />
         </div>
 
-        <div className="mb-6 flex flex-wrap items-center justify-between gap-4 rounded-xl border border-[var(--line)] bg-white p-4">
+        <div className="mb-6 flex flex-wrap items-center justify-between gap-4 rounded-xl border border-[var(--line)] bg-[var(--white)] p-4">
           <div>
             <p className="font-bold">Danh sách cần điểm danh</p>
             <p className="mt-1 text-sm text-[var(--ink-soft)]">Danh sách tự động cập nhật khi thành viên điểm danh. Bạn có thể cập nhật lại thủ công nếu cần.</p>

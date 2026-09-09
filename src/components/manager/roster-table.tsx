@@ -52,11 +52,11 @@ export function RosterTable({
             <article
               key={member.user_id}
               className={`grid grid-cols-[auto_1fr_auto_auto_auto] gap-4 px-5 py-4 items-center transition ${
-                !member.is_required ? "bg-amber-50" : ""
+                !member.is_required ? "bg-amber-950/30" : ""
               }`}
             >
               <div className="flex min-w-0 items-center gap-3">
-                <div className="flex size-10 items-center justify-center rounded-full bg-[var(--ink)] font-black text-white">
+                <div className="flex size-10 items-center justify-center rounded-full bg-[var(--signal)] font-black text-[var(--white)]">
                   {member.display_name?.[0]?.toUpperCase() ?? "?"}
                 </div>
                 <div className="min-w-0">

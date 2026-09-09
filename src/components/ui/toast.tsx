@@ -43,8 +43,8 @@ export function ToastProvider({ children }: { children: ReactNode }) {
           <div
             className={`pointer-events-auto flex w-full items-start gap-3 rounded-2xl border px-4 py-3 text-sm font-bold shadow-xl sm:w-96 ${
               item.variant === "error"
-                ? "border-red-200 bg-red-50 text-red-800"
-                : "border-emerald-200 bg-emerald-50 text-emerald-800"
+                ? "border-red-800 bg-red-950/40 text-red-300"
+                : "border-emerald-800 bg-emerald-950/40 text-emerald-300"
             }`}
             key={item.id}
             role={item.variant === "error" ? "alert" : "status"}

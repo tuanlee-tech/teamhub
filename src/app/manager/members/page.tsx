@@ -1,4 +1,5 @@
 import { updateMemberStatus } from "@/app/manager/actions";
+import { AutoApproveToggle } from "@/components/manager/auto-approve-toggle";
 import { ModuleShell } from "@/components/module-shell";
 import { MembersTour } from "@/components/manager/members-tour";
 import { requireActiveMember } from "@/lib/auth";
@@ -26,11 +27,18 @@ const statusVariants = {
 export default async function MembersPage() {
   const context = await requireActiveMember("manager");
   const supabase = await createClient();
-  const { data: memberships, error } = await supabase
-    .from("organization_members")
-    .select("user_id, role, status, is_active, created_at, profiles!organization_members_user_id_fkey(display_name, username)")
-    .eq("organization_id", context.membership.organizationId)
-    .order("created_at");
+  const [{ data: memberships, error }, { data: orgSettings }] = await Promise.all([
+    supabase
+      .from("organization_members")
+      .select("user_id, role, status, is_active, created_at, profiles!organization_members_user_id_fkey(display_name, username)")
+      .eq("organization_id", context.membership.organizationId)
+      .order("created_at"),
+    supabase
+      .from("organization_settings")
+      .select("auto_approve_members")
+      .eq("organization_id", context.membership.organizationId)
+      .maybeSingle(),
+  ]);
 
   if (error) {
     throw new Error("Không thể tải danh sách thành viên.");
@@ -45,6 +53,10 @@ export default async function MembersPage() {
       <div className="my-4 flex justify-end">
         <MembersTour />
       </div>
+      <PaperPanel className="p-5 sm:p-6" data-tour="members-auto-approve">
+        <AutoApproveToggle enabled={Boolean(orgSettings?.auto_approve_members)} />
+      </PaperPanel>
+      <div className="h-4" />
       <PaperPanel className="overflow-hidden">
         <div className="border-b border-[var(--line)] p-5 sm:p-6" data-tour="members-summary">
           <div className="flex flex-wrap items-center justify-between gap-3">

@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
-import { normalizeTransferText } from "@/lib/domain/payment";
+import { buildTransferDescription, normalizeTransferText } from "@/lib/domain/payment";
 
 function toAscii(str: string): string {
   return str
@@ -24,12 +24,28 @@ export async function GET(
   // Get fine info
   const { data: fine, error: fineError } = await supabase
     .from("fines")
-    .select("id, code, amount_vnd, user_id, organization_id")
+    .select("id, code, amount_vnd, status, user_id, organization_id")
     .eq("code", fineCode)
     .maybeSingle();
 
   if (fineError || !fine) {
     return NextResponse.json({ error: "Fine not found" }, { status: 404 });
+  }
+
+  // Outstanding = original amount minus effective allocations.
+  const { data: allocations } = await supabase
+    .from("fine_allocations")
+    .select("amount_vnd, fund_transactions!inner(voided_at)")
+    .eq("fine_id", fine.id);
+
+  const allocatedVnd = (allocations ?? []).reduce(
+    (sum, row) => sum + (row.amount_vnd ?? 0),
+    0,
+  );
+  const outstandingVnd = Math.max(fine.amount_vnd - allocatedVnd, 0);
+
+  if (fine.status === "paid" || fine.status === "waived" || outstandingVnd <= 0) {
+    return NextResponse.json({ error: "no_outstanding" }, { status: 409 });
   }
 
   // Get member display name
@@ -55,13 +71,17 @@ export async function GET(
   // Build description
   const asciiName = toAscii(profile?.display_name ?? "MEMBER");
   const rule = normalizeTransferText(settings.transfer_description_rule ?? "");
-  const des = normalizeTransferText(`${rule} MC ${fine.code} ${asciiName}`);
+  const des = buildTransferDescription({
+    rule,
+    fineCode: fine.code,
+    displayName: asciiName,
+  });
 
-  // Build VietQR URL
+  // Build VietQR URL for the outstanding amount of this order.
   const usp = new URLSearchParams();
   usp.set("acc", settings.bank_account_number);
   usp.set("bank", settings.bank_code);
-  usp.set("amount", String(fine.amount_vnd));
+  usp.set("amount", String(outstandingVnd));
   usp.set("des", des);
   usp.set("template", settings.vietqr_template ?? "compact");
   usp.set("showinfo", settings.vietqr_show_info ? "true" : "false");

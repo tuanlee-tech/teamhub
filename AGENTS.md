@@ -21,7 +21,7 @@ Card container glassmorphism (border, blur, shadow).
 ```
 
 ### DisplayHeading
-Heading styled với font Impact/Arial Narrow Bold, uppercase.
+Heading styled với font Archivo Narrow (Google Font, hỗ trợ tiếng Việt), uppercase.
 ```tsx
 <DisplayHeading level={3} className="mt-1">Title</DisplayHeading>
 {/* level: 1-4, mặc định 3 */}
@@ -35,7 +35,7 @@ Badge/pill cho status, labels.
 ```
 
 ### FormInput
-Input chuẩn: h-12, rounded-xl, focus ring signal-red.
+Input chuẩn: h-12, rounded-xl, focus ring signal cam.
 ```tsx
 <FormInput name="email" type="email" required placeholder="Email" />
 ```
@@ -61,6 +61,7 @@ Nút phụ với các variant màu.
 ```tsx
 <SecondaryButton variant="destructive">Xóa</SecondaryButton>
 {/* variant: neutral | destructive | positive */}
+{/* fullWidth: true (default: false) */}
 ```
 
 ### Feedback
@@ -95,12 +96,20 @@ Nút mở product tour hoặc contextual help, có icon dấu hỏi trong vòng 
 <HelpButton onClick={startTour} />
 ```
 
-## Color Variables
-- `--paper`: #f4f0e6 (background)
-- `--ink`: #102a2c (text chính)
-- `--ink-soft`: #416064 (text phụ)
-- `--signal`: #e14b32 (accent/CTA)
-- `--line`: rgba(16,42,44,0.18) (border)
+## Color Variables (Dark mode — force dark toàn app)
+- `--paper`: #0d1117 (background tối)
+- `--paper-deep`: #161b22 (surface đậm hơn)
+- `--ink`: #f4f0e6 (text chính, giờ là màu sáng)
+- `--ink-soft`: #a9b3b8 (text phụ)
+- `--signal`: #f7931a (accent/CTA cam)
+- `--signal-dark`: #c77415
+- `--white`: #102a2c (surface tối — KHÔNG phải màu trắng thật nữa)
+- `--line`: rgba(244,240,230,0.14) (border)
+
+> ⚠️ Lưu ý: app force dark. `--ink` là chữ sáng, `--white` là bề mặt tối.
+> Chữ trên nền `--signal` (cam) dùng `--white` (#102a2c) để tương phản.
+> Khi thêm UI: `bg-[var(--white)]` cho surface, `text-[var(--ink)]` cho text,
+> `bg-[var(--signal)] text-[var(--white)]` cho CTA cam.
 
 ## Layout Patterns
 
@@ -151,6 +160,24 @@ export SUPABASE_SERVICE_ROLE_KEY=your_key
 
 npm run db:seed
 ```
+
+### Clear check-in data hôm nay (test đi test lại)
+Xóa sạch dữ liệu check-in của ngày (fines, attendance_records, check_in_attempts,
+daily_roster) để test lại từ đầu. Tính `work_date` theo timezone org (mặc định Asia/Ho_Chi_Minh).
+
+> ⚠️ Mặc định là **dry-run** — chỉ cần thêm `clear` để xóa thật (không hoàn tác).
+
+```bash
+# Xem sẽ xóa gì (an toàn)
+npm run db:clear-checkin
+
+# Xóa thật dữ liệu check-in hôm nay
+npm run db:clear-checkin -- clear
+
+# Xóa theo ngày chỉ định
+npm run db:clear-checkin -- clear 2026-09-09
+```
+Script: `supabase/clear-checkin.ts` (tự load `.env.local`, dùng service role key).
 
 ### Test accounts
 | Email | Password | Display Name |

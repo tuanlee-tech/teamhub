@@ -14,3 +14,4 @@ export { HelpButton } from "./help-button";
 export { Modal } from "./modal";
 export { CloseButton } from "./close-button";
 export { ToastProvider, useToast } from "./toast";
+export { Logo } from "./logo";

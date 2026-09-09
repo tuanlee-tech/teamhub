@@ -2,6 +2,7 @@ import Link from "next/link";
 import { redirect } from "next/navigation";
 
 import { RegisterForm } from "@/components/auth/auth-forms";
+import { Logo } from "@/components/ui";
 import { getMembershipContext } from "@/lib/auth";
 
 export default async function RegisterPage() {
@@ -18,8 +19,8 @@ export default async function RegisterPage() {
   return (
     <main className="grid min-h-screen place-items-center px-5 py-12">
       <section className="paper-panel w-full max-w-lg p-7 sm:p-10">
-        <Link className="display-type text-xl" href="/">
-          TeamHub
+        <Link className="block w-36" href="/">
+          <Logo className="h-full w-full" />
         </Link>
         <h1 className="display-type mt-10 text-5xl">Gia nhập nhóm</h1>
         <p className="mt-4 leading-relaxed text-[var(--ink-soft)]">

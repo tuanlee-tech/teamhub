@@ -12,7 +12,8 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "db:reset": "supabase db reset",
-    "db:seed": "npx tsx supabase/seed-members.ts"
+    "db:seed": "npx tsx supabase/seed-members.ts",
+    "db:clear-checkin": "npx tsx supabase/clear-checkin.ts"
   },
   "dependencies": {
     "@hookform/resolvers": "^5.2.2",
@@ -22,6 +23,7 @@
     "date-fns": "^4.1.0",
     "date-fns-tz": "^3.2.0",
     "driver.js": "^1.8.0",
+    "jsqr": "^1.4.0",
     "lucide-react": "^0.542.0",
     "next": "16.3.4",
     "qrcode": "^1.5.4",

@@ -9,7 +9,7 @@ export function Feedback({ error, success, className = "" }: FeedbackProps) {
   return (
     <p
       className={`rounded-xl px-4 py-3 text-sm font-semibold ${
-        error ? "bg-red-50 text-red-800" : "bg-emerald-50 text-emerald-800"
+        error ? "bg-red-950/40 text-red-300" : "bg-emerald-950/40 text-emerald-300"
       } ${className}`}
       aria-live="polite"
     >

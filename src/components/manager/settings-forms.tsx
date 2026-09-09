@@ -14,7 +14,7 @@ import { Toggle } from "@/components/ui";
 
 const initialState: ManagerActionState = {};
 const inputClassName =
-  "mt-2 h-12 w-full rounded-xl border border-[var(--line)] bg-white px-4 font-normal outline-none transition focus:border-[var(--signal)] focus:ring-3 focus:ring-red-100";
+  "mt-2 h-12 w-full rounded-xl border border-[var(--line)] bg-[var(--white)] px-4 font-normal text-[var(--ink)] outline-none transition placeholder:text-[var(--ink-soft)] focus:border-[var(--signal)] focus:ring-3 focus:ring-[var(--signal)]/20";
 
 function Feedback({ state }: { state: ManagerActionState }) {
   if (!state.error && !state.success) {
@@ -25,7 +25,7 @@ function Feedback({ state }: { state: ManagerActionState }) {
     <p
       aria-live="polite"
       className={`rounded-xl px-4 py-3 text-sm font-semibold ${
-        state.error ? "bg-red-50 text-red-800" : "bg-emerald-50 text-emerald-800"
+        state.error ? "bg-red-950/40 text-red-300" : "bg-emerald-950/40 text-emerald-300"
       }`}
     >
       {state.error ?? state.success}
@@ -59,6 +59,7 @@ export function AttendanceSettingsForm({ values }: { values: AttendanceSettingsV
   const [lat, setLat] = useState(values.officeLatitude != null ? String(values.officeLatitude) : "");
   const [lng, setLng] = useState(values.officeLongitude != null ? String(values.officeLongitude) : "");
   const [geoStatus, setGeoStatus] = useState<string | null>(null);
+  const [geoWarning, setGeoWarning] = useState(false);
   const [locating, setLocating] = useState(false);
   const weekdays = [
     [1, "T2"],
@@ -72,17 +73,28 @@ export function AttendanceSettingsForm({ values }: { values: AttendanceSettingsV
 
   const handleGetLocation = () => {
     if (!navigator.geolocation) {
+      setGeoWarning(true);
       setGeoStatus("Trình duyệt không hỗ trợ định vị.");
       return;
     }
     setLocating(true);
+    setGeoWarning(false);
     setGeoStatus("Đang lấy vị trí...");
     navigator.geolocation.getCurrentPosition(
       (pos) => {
         const { latitude, longitude, accuracy } = pos.coords;
         setLat(String(latitude));
         setLng(String(longitude));
-        setGeoStatus(`Đã lấy: ${latitude.toFixed(6)}, ${longitude.toFixed(6)} (±${Math.round(accuracy)}m) — nhớ Lưu cấu hình`);
+        const round = Math.round(accuracy);
+        if (round >= 100) {
+          setGeoWarning(true);
+          setGeoStatus(
+            `⚠️ Sai số ±${round}m quá lớn — vị trí có thể lệch hàng km, đừng lưu. Ra gần cửa sổ hoặc ngoài trời lấy lại.`,
+          );
+        } else {
+          setGeoWarning(false);
+          setGeoStatus(`Đã lấy: ${latitude.toFixed(6)}, ${longitude.toFixed(6)} (±${round}m) — nhớ Lưu cấu hình`);
+        }
         setLocating(false);
       },
       (err) => {
@@ -92,6 +104,7 @@ export function AttendanceSettingsForm({ values }: { values: AttendanceSettingsV
             : err.code === 2
               ? "Không xác định được vị trí."
               : "Hết thời gian lấy vị trí.";
+        setGeoWarning(true);
         setGeoStatus(msg);
         setLocating(false);
       },
@@ -136,7 +149,7 @@ export function AttendanceSettingsForm({ values }: { values: AttendanceSettingsV
                 type="checkbox"
                 value={value}
               />
-              <span className="grid h-11 place-items-center rounded-xl border border-[var(--line)] bg-white text-sm font-black peer-checked:border-[var(--ink)] peer-checked:bg-[var(--ink)] peer-checked:text-white">
+              <span className="grid h-11 place-items-center rounded-xl border border-[var(--line)] bg-[var(--white)] text-sm font-black peer-checked:border-[var(--signal)] peer-checked:bg-[var(--signal)] peer-checked:text-[var(--white)]">
                 {label}
               </span>
             </label>
@@ -155,7 +168,7 @@ export function AttendanceSettingsForm({ values }: { values: AttendanceSettingsV
         <div className="sm:col-span-2">
           <button
             aria-live="polite"
-            className="inline-flex h-11 items-center gap-2 rounded-xl border border-[var(--line)] bg-white px-4 text-sm font-bold transition hover:border-[var(--ink)] disabled:opacity-60"
+            className="inline-flex h-11 items-center gap-2 rounded-xl border border-[var(--line)] bg-[var(--white)] px-4 text-sm font-bold transition hover:border-[var(--signal)] disabled:opacity-60"
             disabled={locating}
             onClick={handleGetLocation}
             type="button"
@@ -163,8 +176,25 @@ export function AttendanceSettingsForm({ values }: { values: AttendanceSettingsV
             <span aria-hidden>📍</span>
             {locating ? "Đang lấy vị trí..." : "Lấy vị trí"}
           </button>
-          {geoStatus ? <p className="mt-2 text-sm font-medium text-[var(--ink-soft)]">{geoStatus}</p> : null}
-          <p className="mt-1 text-xs text-[var(--ink-soft)]">Yêu cầu HTTPS và cho phép quyền vị trí. Độ chính xác tốt nhất ngoài trời.</p>
+          {geoStatus ? (
+            geoWarning ? (
+              <div
+                aria-live="polite"
+                className="mt-2 rounded-xl border-2 border-red-800 bg-red-950/40 px-4 py-3 text-sm font-semibold text-red-300 shadow-sm"
+              >
+                <p className="flex items-start gap-2">
+                  <span aria-hidden className="inline-block scale-125">⚠️</span>
+                  <span>{geoStatus}</span>
+                </p>
+              </div>
+            ) : (
+              <p className="mt-2 rounded-xl bg-[var(--paper)] px-4 py-3 text-sm font-medium text-[var(--ink-soft)]">{geoStatus}</p>
+            )
+          ) : null}
+          <p className="mt-1 text-xs leading-relaxed text-[var(--ink-soft)]">
+            Chạy qua HTTPS và cấp quyền vị trí. Nên dùng <strong className="font-bold text-[var(--ink)]">điện thoại có GPS thật</strong> —
+            đứng gần cửa sổ hoặc ngoài trời, tránh laptop (Wi-Fi/IP) dễ lệch hàng km. Chỉ nên Lưu khi sai số hiển thị dưới 100m.
+          </p>
         </div>
         <label className="text-sm font-bold">
           Bán kính văn phòng (m)
@@ -265,7 +295,7 @@ export function BankSettingsForm({ values }: { values: BankSettingsValues }) {
           <h3 className="display-type mt-1 text-2xl">Mẫu VietQR</h3>
           <p className="mt-1 text-sm text-[var(--ink-soft)]">Preview dữ liệu mẫu, không dùng để thanh toán.</p>
         </div>
-        <div className="relative mx-auto mt-4 flex min-h-80 max-w-md justify-center rounded-xl bg-white p-3 shadow-sm">
+        <div className="relative mx-auto mt-4 flex min-h-80 max-w-md justify-center rounded-xl bg-[var(--white)] p-3 shadow-sm">
           {/* The VietQR service returns the selected visual template as an image. */}
           {canPreview ? (
             <>
@@ -424,7 +454,7 @@ export function TtsSettingsForm({ values }: { values: TtsSettingsValues }) {
           Giọng đọc ưu tiên
           {!hasMounted ? (
             <>
-              <select className={`${inputClassName} bg-gray-50`} disabled name="preferredVoice">
+              <select className={`${inputClassName} bg-[var(--paper-deep)]`} disabled name="preferredVoice">
                 <option>Đang tải danh sách giọng...</option>
               </select>
               <span className="mt-1 block text-xs font-normal text-[var(--ink-soft)]">Đang quét giọng có thật trên thiết bị này...</span>
@@ -432,12 +462,12 @@ export function TtsSettingsForm({ values }: { values: TtsSettingsValues }) {
           ) : typeof window === "undefined" || !("speechSynthesis" in window) ? (
             <>
               <input name="preferredVoice" type="hidden" value="" />
-              <div className={`${inputClassName} flex items-center bg-gray-50 text-[var(--ink-soft)]`}>Thiết bị không hỗ trợ giọng đọc</div>
+              <div className={`${inputClassName} flex items-center bg-[var(--paper-deep)] text-[var(--ink-soft)]`}>Thiết bị không hỗ trợ giọng đọc</div>
               <span className="mt-1 block text-xs font-normal text-[var(--ink-soft)]">Trình duyệt này không có Web Speech API — MC sẽ im lặng.</span>
             </>
           ) : !voicesLoaded ? (
             <>
-              <select className={`${inputClassName} bg-gray-50`} disabled name="preferredVoice">
+              <select className={`${inputClassName} bg-[var(--paper-deep)]`} disabled name="preferredVoice">
                 <option>Đang tải danh sách giọng...</option>
               </select>
               <span className="mt-1 block text-xs font-normal text-[var(--ink-soft)]">Đang quét giọng có thật trên thiết bị này...</span>
@@ -445,7 +475,7 @@ export function TtsSettingsForm({ values }: { values: TtsSettingsValues }) {
           ) : availableVoices.length === 0 ? (
             <>
               <input name="preferredVoice" type="hidden" value="" />
-              <div className={`${inputClassName} flex items-center bg-gray-50 text-[var(--ink-soft)]`}>Không tìm thấy giọng nào</div>
+              <div className={`${inputClassName} flex items-center bg-[var(--paper-deep)] text-[var(--ink-soft)]`}>Không tìm thấy giọng nào</div>
               <span className="mt-1 block text-xs font-normal text-[var(--ink-soft)]">Không có voice khả dụng — sẽ dùng mặc định hệ thống.</span>
             </>
           ) : (

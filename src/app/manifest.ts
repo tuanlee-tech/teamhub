@@ -7,15 +7,21 @@ export default function manifest(): MetadataRoute.Manifest {
     description: "Smart Attendance, Automated Fines & Team Culture",
     start_url: "/",
     display: "standalone",
-    background_color: "#f4f0e6",
-    theme_color: "#102a2c",
+    background_color: "#0d1117",
+    theme_color: "#0d1117",
     lang: "vi",
     orientation: "any",
     icons: [
       {
-        src: "/icon.svg",
-        sizes: "any",
-        type: "image/svg+xml",
+        src: "/icon-192.png",
+        sizes: "192x192",
+        type: "image/png",
+        purpose: "any",
+      },
+      {
+        src: "/icon-512.png",
+        sizes: "512x512",
+        type: "image/png",
         purpose: "any",
       },
       {

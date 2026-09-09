@@ -404,6 +404,25 @@ export async function deletePenaltyTier(formData: FormData) {
   return { success: "Đã xóa khung phạt." };
 }
 
+export async function setAutoApprove(enabled: boolean) {
+  const context = await requireActiveMember("manager");
+  const supabase = await createClient();
+  const { error } = await supabase
+    .from("organization_settings")
+    .update({
+      auto_approve_members: Boolean(enabled),
+      updated_by: context.userId,
+    })
+    .eq("organization_id", context.membership.organizationId);
+
+  if (error) {
+    return { error: "Không thể lưu cấu hình phê duyệt." };
+  }
+
+  revalidatePath("/manager/members");
+  return { success: enabled ? "Đã bật duyệt tự động." : "Đã tắt duyệt tự động." };
+}
+
 export async function updateMemberStatus(formData: FormData) {
   const parsed = memberStatusSchema.safeParse({
     userId: formData.get("userId"),

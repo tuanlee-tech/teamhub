@@ -2,6 +2,7 @@ import type { NextConfig } from "next";
 
 const NGROK_DOMAIN = process.env.NGROK_DOMAIN ?? "dandy-unsent-gab.ngrok-free.dev";
 const TEAMHUB_URL = process.env.NEXT_PUBLIC_TEAMHUB_URL ?? `https://${NGROK_DOMAIN}`;
+const isDevelopment = process.env.NODE_ENV !== "production";
 let teamhubHost = NGROK_DOMAIN;
 try {
   teamhubHost = new URL(TEAMHUB_URL).host;
@@ -42,6 +43,7 @@ const nextConfig: NextConfig = {
           { key: "X-Content-Type-Options", value: "nosniff" },
           { key: "X-Frame-Options", value: "DENY" },
           { key: "Referrer-Policy", value: "strict-origin-when-cross-origin" },
+          ...(isDevelopment ? [{ key: "Cache-Control", value: "no-store, no-cache, must-revalidate, max-age=0" }] : []),
           {
             key: "Permissions-Policy",
             // Include modern features to silence Chrome "Unrecognized feature: attribution-reporting"

@@ -1,5 +1,5 @@
 const CACHE_NAME = "teamhub-shell-v1";
-const APP_SHELL = ["/", "/offline", "/icon.svg", "/maskable-icon.svg"];
+const APP_SHELL = ["/", "/offline", "/icon.svg", "/icon-192.png", "/icon-512.png", "/maskable-icon.svg"];
 
 self.addEventListener("install", (event) => {
   event.waitUntil(caches.open(CACHE_NAME).then((cache) => cache.addAll(APP_SHELL)));
@@ -32,7 +32,7 @@ self.addEventListener("fetch", (event) => {
     return;
   }
 
-  if (url.pathname.startsWith("/_next/static/") || url.pathname.endsWith(".svg")) {
+  if (url.pathname.startsWith("/_next/static/") || url.pathname.endsWith(".svg") || url.pathname.endsWith(".png")) {
     event.respondWith(
       caches.match(request).then(
         (cached) =>
