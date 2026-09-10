@@ -16,8 +16,10 @@ import {
 import { SegmentedTabs } from "@/components/ui/segmented-tabs";
 import { formatTimeInTimezone } from "@/lib/domain/date";
 import type { PaymentBank } from "@/lib/domain/payment";
+import { useOrganizationRealtime } from "@/lib/realtime/organization-events";
+import { createClient } from "@/lib/supabase/client";
 
-type LateRow = {
+export type LateRow = {
   user_id: string;
   display_name: string | null;
   username: string | null;
@@ -33,7 +35,89 @@ type LateRow = {
   outstanding_vnd: number | null;
 };
 
+export type LateScopeEvent =
+  | { kind: "check-in-status"; work_date?: string | null }
+  | { kind: "attendance-status"; work_date?: string | null }
+  | { kind: "fine-status"; work_date?: string | null; fine_id?: string | null }
+  | {
+      kind: "fine-allocation-status";
+      work_date?: string | null;
+      old_work_date?: string | null;
+      fine_id?: string | null;
+      old_fine_id?: string | null;
+    }
+  | { kind: "fund-status"; related_fine_ids?: string[] | null };
+
+export function isFinePaidOff(row: LateRow): boolean {
+  if (!row.fine_id) return false;
+  if (row.fine_status === "paid" || row.fine_status === "waived") return true;
+  // Zero-outstanding unpaid coi như hết nợ theo contract (outstanding = original - allocated).
+  return (row.outstanding_vnd ?? 0) <= 0;
+}
+
+export function splitLateRows(rows: LateRow[]): {
+  unpaid: LateRow[];
+  pendingFine: LateRow[];
+  paid: LateRow[];
+} {
+  const unpaid = rows.filter(
+    (row) => row.fine_id && row.fine_status !== "paid" && row.fine_status !== "waived" && (row.outstanding_vnd ?? 0) > 0,
+  );
+  const pendingFine = rows.filter((row) => !row.fine_id);
+  const paid = rows.filter((row) => row.fine_id && isFinePaidOff(row));
+  return { unpaid, pendingFine, paid };
+}
+
+export function findLateRowByFineId(rows: LateRow[], fineId: string | null): LateRow | null {
+  if (!fineId) return null;
+  return rows.find((row) => row.fine_id === fineId) ?? null;
+}
+
+/**
+ * Quyết định event realtime có liên quan work_date đang xem hay không.
+ * Payload Broadcast là flat (không nested `payload`), nên chỉ đọc trường cùng cấp.
+ * Quy tắc: thiếu scope (null) thì reload để không bỏ sót; khác ngày và fine
+ * không thuộc danh sách hiện tại thì bỏ qua để tránh reload vô ích.
+ */
+export function shouldReloadLateForEvent(
+  event: LateScopeEvent,
+  workDate: string,
+  knownFineIds: Iterable<string> | null,
+): boolean {
+  const known = knownFineIds ? new Set(knownFineIds) : new Set<string>();
+  const hasKnown = (id: string | null | undefined) => !!id && known.has(id);
+
+  switch (event.kind) {
+    case "check-in-status":
+    case "attendance-status": {
+      if (event.work_date == null) return true;
+      return event.work_date === workDate;
+    }
+    case "fine-status": {
+      if (event.work_date == null) return true;
+      if (event.work_date === workDate) return true;
+      // Fine chuyển ngày: scope cũ (đang xem) vẫn cần reload dù work_date mới khác.
+      return hasKnown(event.fine_id);
+    }
+    case "fine-allocation-status": {
+      if (event.work_date === workDate || event.old_work_date === workDate) return true;
+      if (hasKnown(event.fine_id) || hasKnown(event.old_fine_id)) return true;
+      // Cả hai scope đều null/unknown: chỉ reload khi allocation chạm fine đang hiển thị.
+      if (event.work_date == null && event.old_work_date == null) return false;
+      return false;
+    }
+    case "fund-status": {
+      const related = event.related_fine_ids ?? [];
+      if (related.length === 0) return false;
+      return related.some((id) => known.has(id));
+    }
+  }
+}
+
+const LATE_RELOAD_COALESCE_MS = 250;
+
 export function LateList({
+  organizationId,
   workDate,
   today,
   minDate,
@@ -42,7 +126,9 @@ export function LateList({
   rows,
   updatedAt,
   bank,
+  canOpenPaymentQr,
 }: {
+  organizationId: string;
   workDate: string;
   today: string;
   minDate: string;
@@ -51,13 +137,121 @@ export function LateList({
   rows: LateRow[];
   updatedAt: string;
   bank: PaymentBank | null;
+  canOpenPaymentQr: boolean;
 }) {
   const router = useRouter();
   const searchParams = useSearchParams();
+  const supabase = createClient();
   const tab = searchParams.get("tab") === "paid" ? "paid" : "unpaid";
-  const [expanded, setExpanded] = useState<LateRow | null>(null);
+  // Modal chỉ giữ selected fine id; row luôn tra lại từ snapshot mới nhất để không stale.
+  const [selectedFineId, setSelectedFineId] = useState<string | null>(null);
+  const [liveRows, setLiveRows] = useState<LateRow[]>(rows);
   const [refreshing, setRefreshing] = useState(false);
   const refreshTimerRef = useRef<number | null>(null);
+  const requestIdRef = useRef(0);
+  const coalesceTimerRef = useRef<number | null>(null);
+  const workDateRef = useRef(workDate);
+  const liveRowsRef = useRef(liveRows);
+
+  useEffect(() => {
+    workDateRef.current = workDate;
+  }, [workDate]);
+
+  useEffect(() => {
+    liveRowsRef.current = liveRows;
+  }, [liveRows]);
+
+  // Đồng bộ snapshot server khi đổi ngày (navigation mới) mà vẫn giữ tab qua URL.
+  useEffect(() => {
+    requestIdRef.current += 1;
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- sync server snapshot theo ngày
+    setLiveRows(rows);
+    setSelectedFineId((current) => (current && rows.some((row) => row.fine_id === current) ? current : null));
+  }, [rows, workDate]);
+
+  const loadSnapshot = useCallback(
+    async (date: string) => {
+      const requestId = (requestIdRef.current += 1);
+      setRefreshing(true);
+      try {
+        const { data } = await supabase.rpc("get_daily_late_list", {
+          p_organization_id: organizationId,
+          p_work_date: date,
+        });
+        // Response của ngày cũ không được ghi đè ngày mới.
+        if (requestIdRef.current !== requestId) return;
+        if (workDateRef.current !== date) return;
+        setLiveRows((data ?? []) as LateRow[]);
+      } catch {
+        if (requestIdRef.current !== requestId) return;
+        if (workDateRef.current !== date) return;
+        setLiveRows([]);
+      } finally {
+        if (requestIdRef.current === requestId && workDateRef.current === date) {
+          setRefreshing(false);
+        }
+      }
+    },
+    [supabase, organizationId],
+  );
+
+  const scheduleReload = useCallback(() => {
+    if (coalesceTimerRef.current !== null) return;
+    coalesceTimerRef.current = window.setTimeout(() => {
+      coalesceTimerRef.current = null;
+      loadSnapshot(workDateRef.current).catch(() => {});
+    }, LATE_RELOAD_COALESCE_MS);
+  }, [loadSnapshot]);
+
+  const reloadNow = useCallback(() => {
+    if (coalesceTimerRef.current !== null) {
+      window.clearTimeout(coalesceTimerRef.current);
+      coalesceTimerRef.current = null;
+    }
+    return loadSnapshot(workDateRef.current);
+  }, [loadSnapshot]);
+
+  const shouldReload = useCallback(
+    (event: LateScopeEvent) => {
+      const knownFineIds = liveRowsRef.current.map((row) => row.fine_id).filter((id): id is string => !!id);
+      return shouldReloadLateForEvent(event, workDateRef.current, knownFineIds);
+    },
+    [],
+  );
+
+  useOrganizationRealtime(
+    organizationId,
+    {
+      onCheckIn: (event) => {
+        if (shouldReload({ kind: "check-in-status", work_date: event.work_date })) scheduleReload();
+      },
+      onAttendance: (event) => {
+        if (shouldReload({ kind: "attendance-status", work_date: event.work_date })) scheduleReload();
+      },
+      onFine: (event) => {
+        if (shouldReload({ kind: "fine-status", work_date: event.work_date, fine_id: event.fine_id })) {
+          scheduleReload();
+        }
+      },
+      onFineAllocation: (event) => {
+        if (
+          shouldReload({
+            kind: "fine-allocation-status",
+            work_date: event.work_date,
+            old_work_date: event.old_work_date,
+            fine_id: event.fine_id,
+            old_fine_id: event.old_fine_id,
+          })
+        ) {
+          scheduleReload();
+        }
+      },
+      onFund: (event) => {
+        if (shouldReload({ kind: "fund-status", related_fine_ids: event.related_fine_ids })) scheduleReload();
+      },
+    },
+    { onSnapshotReady: () => scheduleReload() },
+  );
 
   const onDateChange = useCallback(
     (next: string) => {
@@ -69,33 +263,30 @@ export function LateList({
   );
 
   const refresh = useCallback(() => {
-    setRefreshing(true);
-    router.refresh();
+    reloadNow().catch(() => {});
     if (refreshTimerRef.current !== null) window.clearTimeout(refreshTimerRef.current);
     refreshTimerRef.current = window.setTimeout(() => {
       refreshTimerRef.current = null;
-      setRefreshing(false);
     }, 800);
-  }, [router]);
+  }, [reloadNow]);
 
   useEffect(() => () => {
     if (refreshTimerRef.current !== null) window.clearTimeout(refreshTimerRef.current);
+    if (coalesceTimerRef.current !== null) window.clearTimeout(coalesceTimerRef.current);
   }, []);
 
   useEffect(() => {
     const onVisible = () => {
-      if (document.visibilityState === "visible") router.refresh();
+      if (document.visibilityState === "visible") reloadNow().catch(() => {});
     };
     document.addEventListener("visibilitychange", onVisible);
     return () => document.removeEventListener("visibilitychange", onVisible);
-  }, [router]);
+  }, [reloadNow]);
 
-  const unpaid = rows.filter(
-    (row) => row.fine_id && row.fine_status !== "paid" && row.fine_status !== "waived" && (row.outstanding_vnd ?? 0) > 0,
-  );
-  const pendingFine = rows.filter((row) => !row.fine_id);
-  const paid = rows.filter((row) => row.fine_id && (row.fine_status === "paid" || row.fine_status === "waived"));
+  const { unpaid, pendingFine, paid } = splitLateRows(liveRows);
   const displayed = tab === "paid" ? paid : [...unpaid, ...pendingFine];
+  // Tra row mới nhất theo selected fine id để payment/waive/allocation cập nhật badge và modal ngay.
+  const selectedRow = findLateRowByFineId(liveRows, selectedFineId);
 
   return (
     <div className="space-y-5">
@@ -166,10 +357,10 @@ export function LateList({
                     <p className="text-sm text-[var(--ink-soft)]">Chưa cấp phiếu phạt</p>
                   )}
                 </div>
-                {row.fine_id && (row.outstanding_vnd ?? 0) > 0 && row.fine_status !== "paid" && row.fine_status !== "waived" ? (
+                {canOpenPaymentQr && !isFinePaidOff(row) && row.fine_id ? (
                   <button
                     type="button"
-                    onClick={() => setExpanded(row)}
+                    onClick={() => setSelectedFineId(row.fine_id)}
                     className="grid size-12 shrink-0 place-items-center rounded-2xl bg-[var(--signal)] text-[var(--paper)]"
                     aria-label={`Phóng lớn QR phiếu ${row.fine_code}`}
                   >
@@ -182,18 +373,22 @@ export function LateList({
         </DividedList>
       )}
 
-      <Modal open={expanded !== null} onClose={() => setExpanded(null)} title="QR thanh toán">
-        {expanded?.fine_id ? (
+      <Modal open={selectedFineId !== null} onClose={() => setSelectedFineId(null)} title="QR thanh toán">
+        {selectedRow?.fine_id ? (
           <PaymentQrPanel
-            fineCode={expanded.fine_code ?? "—"}
-            originalVnd={expanded.original_vnd ?? 0}
-            allocatedVnd={expanded.allocated_vnd ?? 0}
-            outstandingVnd={expanded.outstanding_vnd ?? 0}
-            status={(expanded.fine_status as "unpaid" | "paid" | "waived") ?? "unpaid"}
-            memberName={expanded.display_name ?? "Thành viên"}
+            fineCode={selectedRow.fine_code ?? "—"}
+            originalVnd={selectedRow.original_vnd ?? 0}
+            allocatedVnd={selectedRow.allocated_vnd ?? 0}
+            outstandingVnd={selectedRow.outstanding_vnd ?? 0}
+            status={(selectedRow.fine_status as "unpaid" | "paid" | "waived") ?? "unpaid"}
+            memberName={selectedRow.display_name ?? "Thành viên"}
             bank={bank}
           />
-        ) : null}
+        ) : (
+          <p className="px-1 py-6 text-center text-sm text-[var(--ink-soft)]">
+            Phiếu này đã chuyển trạng thái hoặc không còn trong ngày đang xem.
+          </p>
+        )}
       </Modal>
     </div>
   );
@@ -201,7 +396,7 @@ export function LateList({
 
 function LateBadge({ row }: { row: LateRow }) {
   if (row.fine_status === "waived") return <Stamp variant="info">Được miễn</Stamp>;
-  if (row.fine_status === "paid") return <Stamp variant="success">Đã trả</Stamp>;
+  if (row.fine_id && isFinePaidOff(row)) return <Stamp variant="success">Đã trả</Stamp>;
   if ((row.outstanding_vnd ?? 0) > 0) return <Stamp variant="error">Còn nợ</Stamp>;
   if (!row.fine_id) return <Stamp variant="warning">Chờ cấp phiếu</Stamp>;
   return <Stamp variant="muted">Xử lý</Stamp>;

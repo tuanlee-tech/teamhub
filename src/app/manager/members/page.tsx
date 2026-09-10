@@ -47,7 +47,7 @@ export default async function MembersPage() {
   return (
     <ModuleShell
       description="Tài khoản mới không thể đọc dữ liệu nhóm hoặc điểm danh cho đến khi manager chấp thuận."
-      eyebrow="Thành viên"
+      eyebrow=""
       title="Ai được vào nhóm"
     >
       <div className="my-4 flex justify-end">

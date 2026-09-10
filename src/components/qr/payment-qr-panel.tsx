@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Check, Copy, Download, Share, ShieldCheck } from "lucide-react";
 
-import { CurrencyText, SecondaryButton, Stamp } from "@/components/ui";
+import { CurrencyText, SecondaryButton, Stamp, useToast } from "@/components/ui";
 import { buildTransferDescription, normalizeTransferText, type PaymentBank } from "@/lib/domain/payment";
 
 type PaymentQrPanelProps = {
@@ -15,6 +15,24 @@ type PaymentQrPanelProps = {
   memberName: string;
   bank: PaymentBank | null;
 };
+
+/**
+ * Panel hết nợ khi status khác unpaid hoặc không còn outstanding (contract §6).
+ * Parent chịu trách nhiệm refetch snapshot realtime và pass props mới —
+ * panel không tự subscribe để tránh trùng subscription với parent.
+ */
+export function isPaymentPaidOff(status: PaymentQrPanelProps["status"], outstandingVnd: number): boolean {
+  return status !== "unpaid" || outstandingVnd <= 0;
+}
+
+/**
+ * QR phải đổi khi outstanding đổi. Endpoint tính lại số tiền từ server theo
+ * fineCode nên query `amount` chỉ để cache-bust phía browser/CDN, không phải
+ * nguồn sự thật số tiền.
+ */
+export function buildPaymentQrSrc(fineCode: string, outstandingVnd: number): string {
+  return `/api/vietqr/${encodeURIComponent(fineCode)}?amount=${Number.isFinite(outstandingVnd) ? Math.max(Math.trunc(outstandingVnd), 0) : 0}`;
+}
 
 function toAscii(str: string): string {
   return str
@@ -56,13 +74,15 @@ export function PaymentQrPanel({
   const [copied, setCopied] = useState<string | null>(null);
   const [sharing, setSharing] = useState(false);
   const copiedTimerRef = useRef<number | null>(null);
+  const { error: toastError } = useToast();
 
   useEffect(() => () => {
     if (copiedTimerRef.current !== null) window.clearTimeout(copiedTimerRef.current);
   }, []);
 
-  const hasOutstanding = status === "unpaid" && outstandingVnd > 0;
+  const hasOutstanding = !isPaymentPaidOff(status, outstandingVnd);
   const paidOff = !hasOutstanding;
+  const qrSrc = buildPaymentQrSrc(fineCode, outstandingVnd);
   const description = bank
     ? buildTransferDescription({
         rule: normalizeTransferText(bank.transferDescriptionRule ?? ""),
@@ -88,8 +108,16 @@ export function PaymentQrPanel({
 
   async function downloadQr() {
     try {
-      const response = await fetch(`/api/vietqr/${fineCode}`);
-      if (!response.ok) throw new Error("fetch failed");
+      const response = await fetch(qrSrc);
+      if (!response.ok) {
+        if (response.status === 409) {
+          // Race: server đã hết nợ (payment/allocation mới) nhưng props parent
+          // chưa refresh kịp. Báo ngay để user không chuyển khoản thừa.
+          toastError("Phiếu này vừa hết nợ. Số tiền mới đang được cập nhật.");
+          return;
+        }
+        throw new Error("fetch failed");
+      }
       const blob = await response.blob();
       const url = URL.createObjectURL(blob);
       const anchor = document.createElement("a");
@@ -98,14 +126,18 @@ export function PaymentQrPanel({
       anchor.click();
       URL.revokeObjectURL(url);
     } catch {
-      window.open(`/api/vietqr/${fineCode}`, "_blank");
+      window.open(qrSrc, "_blank");
     }
   }
 
   async function shareQr() {
     setSharing(true);
     try {
-      const response = await fetch(`/api/vietqr/${fineCode}`);
+      const response = await fetch(qrSrc);
+      if (response.status === 409) {
+        toastError("Phiếu này vừa hết nợ. Số tiền mới đang được cập nhật.");
+        return;
+      }
       if (response.ok && "share" in navigator) {
         const blob = await response.blob();
         const file = new File([blob], `phieu-${fineCode}.png`, { type: "image/png" });
@@ -149,18 +181,9 @@ export function PaymentQrPanel({
         </div>
       ) : bank ? (
         <>
-          <div className="flex justify-center">
-            <div className="relative rounded-2xl border border-[var(--line)] bg-[var(--white)] p-4">
-              {/* eslint-disable-next-line @next/next/no-img-element */}
-              <img
-                src={`/api/vietqr/${fineCode}`}
-                alt={`QR thanh toán phiếu ${fineCode}`}
-                width={280}
-                height={280}
-                className="size-56 object-contain sm:size-64"
-              />
-            </div>
-          </div>
+          {/* key theo qrSrc: props mới (outstanding mới) remount ảnh mới,
+              không giữ ảnh QR cũ chỉ vì fine code không đổi. */}
+          <QrImage key={qrSrc} qrSrc={qrSrc} fineCode={fineCode} />
 
           <div className="rounded-2xl border border-[var(--line)] bg-[var(--paper-deep)]/40 p-4">
             <div className="grid grid-cols-2 gap-x-4 gap-y-3 text-sm">
@@ -225,5 +248,44 @@ export function PaymentQrPanel({
         </p>
       )}
     </section>
+  );
+}
+
+/**
+ * Ảnh QR riêng để lỗi tải (endpoint 409 `no_outstanding` khi server đã hết nợ
+ * nhưng props parent chưa refresh kịp) không làm vỡ layout. Parent remount qua
+ * key khi outstanding đổi nên không giữ trạng thái lỗi cũ.
+ */
+function QrImage({ qrSrc, fineCode }: { qrSrc: string; fineCode: string }) {
+  const [failed, setFailed] = useState(false);
+
+  if (failed) {
+    return (
+      <div className="space-y-3">
+        <p className="rounded-xl border border-[var(--line)] bg-[var(--paper-deep)]/50 px-4 py-3 text-sm text-[var(--ink-soft)]">
+          Không tải được QR — có thể phiếu vừa được thanh toán hoặc số tiền vừa đổi.
+          Snapshot mới đang được cập nhật theo realtime.
+        </p>
+        <SecondaryButton type="button" onClick={() => setFailed(false)}>
+          Tải lại QR
+        </SecondaryButton>
+      </div>
+    );
+  }
+
+  return (
+    <div className="flex justify-center">
+      <div className="relative rounded-2xl border border-[var(--line)] bg-[var(--white)] p-4">
+        {/* eslint-disable-next-line @next/next/no-img-element */}
+        <img
+          src={qrSrc}
+          onError={() => setFailed(true)}
+          alt={`QR thanh toán phiếu ${fineCode}`}
+          width={280}
+          height={280}
+          className="size-56 object-contain sm:size-64"
+        />
+      </div>
+    </div>
   );
 }

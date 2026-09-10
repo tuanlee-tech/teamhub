@@ -35,6 +35,7 @@ export default async function LatePage({
 
   return (
     <LateList
+      organizationId={orgId}
       workDate={workDate}
       today={today}
       minDate={minDate}
@@ -43,6 +44,7 @@ export default async function LatePage({
       rows={rows ?? []}
       updatedAt={new Date().toISOString()}
       bank={paymentBankFromSettings(settings)}
+      canOpenPaymentQr={context.membership.role === "manager"}
     />
   );
 }

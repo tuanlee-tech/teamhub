@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { createAdminClient } from "@/lib/supabase/admin";
 import { createClient } from "@/lib/supabase/server";
 import { buildTransferDescription, normalizeTransferText } from "@/lib/domain/payment";
 
@@ -21,42 +22,77 @@ export async function GET(
 
   const supabase = await createClient();
 
-  // Get fine info
-  const { data: fine, error: fineError } = await supabase
+  // Không nới quyền: chỉ active member cùng org mới được tạo QR.
+  // RLS fines vốn đã giới hạn owner/manager, check thêm org để defense-in-depth.
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+  if (!user) {
+    return NextResponse.json({ error: "Fine not found" }, { status: 404 });
+  }
+  const { data: membership } = await supabase
+    .from("organization_members")
+    .select("organization_id, role, is_active, status")
+    .eq("user_id", user.id)
+    .maybeSingle();
+  if (!membership || membership.status !== "active" || !membership.is_active) {
+    return NextResponse.json({ error: "Fine not found" }, { status: 404 });
+  }
+
+  // AuthZ ở trên dùng session viewer; đọc dữ liệu thanh toán bằng service role để
+  // manager/kiosk xem được QR fine của người khác mà không bị RLS owner che.
+  const admin = createAdminClient();
+
+  const { data: fine, error: fineError } = await admin
     .from("fines")
     .select("id, code, amount_vnd, status, user_id, organization_id")
     .eq("code", fineCode)
+    .eq("organization_id", membership.organization_id)
     .maybeSingle();
 
   if (fineError || !fine) {
     return NextResponse.json({ error: "Fine not found" }, { status: 404 });
   }
 
+  const canViewQr =
+    fine.user_id === user.id || membership.role === "manager" || membership.role === "kiosk";
+  if (!canViewQr) {
+    return NextResponse.json({ error: "Fine not found" }, { status: 404 });
+  }
+
   // Outstanding = original amount minus effective allocations.
-  const { data: allocations } = await supabase
+  // Contract §13 + get_daily_late_list: loại allocation có fund đã void.
+  // Không tin số tiền từ client (query `amount` chỉ để cache-bust, bỏ qua ở đây).
+  const { data: allocations } = await admin
     .from("fine_allocations")
-    .select("amount_vnd, fund_transactions!inner(voided_at)")
+    .select("amount_vnd, fund_transactions(voided_at)")
     .eq("fine_id", fine.id);
 
-  const allocatedVnd = (allocations ?? []).reduce(
-    (sum, row) => sum + (row.amount_vnd ?? 0),
-    0,
-  );
+  const allocatedVnd = (allocations ?? [])
+    .filter((row) => {
+      // Supabase có thể trả join dạng object hoặc array; void = đã void.
+      const fund = row.fund_transactions as unknown;
+      const funds = Array.isArray(fund) ? fund : [fund];
+      return funds.every(
+        (item) => item == null || (item as { voided_at: string | null }).voided_at == null,
+      );
+    })
+    .reduce((sum, row) => sum + (row.amount_vnd ?? 0), 0);
   const outstandingVnd = Math.max(fine.amount_vnd - allocatedVnd, 0);
 
   if (fine.status === "paid" || fine.status === "waived" || outstandingVnd <= 0) {
     return NextResponse.json({ error: "no_outstanding" }, { status: 409 });
   }
 
-  // Get member display name
-  const { data: profile } = await supabase
+  // Get member display name — luôn dùng chủ fine (fine.user_id), không nhầm viewer.
+  const { data: profile } = await admin
     .from("profiles")
     .select("display_name")
     .eq("user_id", fine.user_id)
     .maybeSingle();
 
   // Get org settings
-  const { data: settings } = await supabase
+  const { data: settings } = await admin
     .from("organization_settings")
     .select(
       "bank_code, bank_account_number, bank_account_holder, transfer_description_rule, fund_display_name, vietqr_template, vietqr_show_info, vietqr_full_account"
@@ -91,6 +127,9 @@ export async function GET(
 
   const vietQrUrl = `https://vietqr.app/img?${usp.toString()}`;
 
-  // Redirect to VietQR image
-  return NextResponse.redirect(vietQrUrl, 302);
+  // Redirect to VietQR image. no-store để QR cũ theo outstanding cũ không bị
+  // browser/CDN giữ lại sau khi allocation/payment đổi số tiền.
+  const redirect = NextResponse.redirect(vietQrUrl, 302);
+  redirect.headers.set("Cache-Control", "no-store");
+  return redirect;
 }

@@ -13,6 +13,14 @@ import { formatTimeInTimezone } from "@/lib/domain/date";
 import type { PaymentBank } from "@/lib/domain/payment";
 import { useOrganizationRealtime } from "@/lib/realtime/organization-events";
 import { createClient } from "@/lib/supabase/client";
+import {
+  createTtsEngine,
+  normalizeTtsConfig,
+  ttsConfigFromRow,
+  type TtsAnnouncement,
+  type TtsConfig,
+  type TtsEngine,
+} from "@/lib/tts";
 import Link from "next/link";
 
 type SessionInfo = {
@@ -51,6 +59,194 @@ type LateRow = {
 
 const CODE_TTL_MS = 30 * 60 * 1000;
 
+/** Coalesce late-list reload khi event dồn (giống B05). */
+export const KIOSK_LATE_RELOAD_COALESCE_MS = 250;
+/** Dedup consumer-level cho feed/toast/TTS/QR rotation (event_id, TTL 5 phút). */
+export const KIOSK_SEEN_TTL_MS = 5 * 60 * 1000;
+export const KIOSK_SEEN_MAX_ENTRIES = 500;
+
+export type KioskLateScopeEvent =
+  | { kind: "check-in-status"; work_date?: string | null }
+  | { kind: "attendance-status"; work_date?: string | null }
+  | { kind: "fine-status"; work_date?: string | null; fine_id?: string | null }
+  | {
+      kind: "fine-allocation-status";
+      work_date?: string | null;
+      old_work_date?: string | null;
+      fine_id?: string | null;
+      old_fine_id?: string | null;
+    }
+  | { kind: "fund-status"; related_fine_ids?: string[] | null };
+
+/**
+ * Quyết định event realtime có liên quan work_date kiosk đang xem hay không.
+ * Payload Broadcast là flat (không nested `payload`), chỉ đọc trường cùng cấp.
+ * Quy tắc: thiếu scope (null) thì reload để không bỏ sót; khác ngày và fine
+ * không thuộc danh sách hiện tại thì bỏ qua để tránh reload vô ích.
+ */
+export function shouldReloadKioskLateForEvent(
+  event: KioskLateScopeEvent,
+  workDate: string,
+  knownFineIds: Iterable<string> | null,
+): boolean {
+  const known = knownFineIds ? new Set(knownFineIds) : new Set<string>();
+  const hasKnown = (id: string | null | undefined) => !!id && known.has(id);
+
+  switch (event.kind) {
+    case "check-in-status":
+    case "attendance-status": {
+      if (event.work_date == null) return true;
+      return event.work_date === workDate;
+    }
+    case "fine-status": {
+      if (event.work_date == null) return true;
+      if (event.work_date === workDate) return true;
+      // Fine chuyển ngày: scope cũ (đang xem) vẫn cần reload dù work_date mới khác.
+      return hasKnown(event.fine_id);
+    }
+    case "fine-allocation-status": {
+      if (event.work_date === workDate || event.old_work_date === workDate) return true;
+      if (hasKnown(event.fine_id) || hasKnown(event.old_fine_id)) return true;
+      // Cả hai scope đều null/unknown: chỉ reload khi allocation chạm fine đang hiển thị.
+      if (event.work_date == null && event.old_work_date == null) return false;
+      return false;
+    }
+    case "fund-status": {
+      const related = event.related_fine_ids ?? [];
+      if (related.length === 0) return false;
+      return related.some((id) => known.has(id));
+    }
+  }
+}
+
+export type KioskCheckInAnnouncementInput = {
+  event_id?: string | null;
+  attempt_id: number;
+  display_name?: string | null;
+  attendance_state?: string | null;
+  late_minutes?: number | null;
+  server_received_at?: string | null;
+  succeeded: boolean;
+};
+
+/**
+ * Map check-in thành công sang announcement `on_time`/`late` theo trạng thái
+ * chuẩn. Check-in thất bại trả null (chỉ toast/feed, không đọc).
+ */
+export function mapCheckInToAnnouncement(input: KioskCheckInAnnouncementInput): TtsAnnouncement | null {
+  if (!input.succeeded) return null;
+  const rawEventId = input.event_id?.trim() ? (input.event_id as string).trim() : "";
+  const eventId = rawEventId || `checkin-${input.attempt_id}-${input.server_received_at ?? "live"}`;
+  const announcementType = input.attendance_state === "late" ? "late" : "on_time";
+  const lateMinutes =
+    announcementType === "late" && typeof input.late_minutes === "number" && Number.isFinite(input.late_minutes)
+      ? Math.round(input.late_minutes)
+      : undefined;
+  return {
+    eventId,
+    announcementType,
+    displayName: input.display_name ?? null,
+    ...(lateMinutes !== undefined ? { lateMinutes } : {}),
+  };
+}
+
+export type KioskFineAnnouncementInput = {
+  event_id?: string | null;
+  fine_id: string;
+  fine_code?: string | null;
+  status: string;
+};
+
+/**
+ * Chỉ fine chuyển sang `paid` mới đọc (announcement `payment`).
+ * Waived/unpaid trả null — miễn phạt không được đọc như đã thanh toán.
+ */
+export function mapFineToPaymentAnnouncement(input: KioskFineAnnouncementInput): TtsAnnouncement | null {
+  if (input.status !== "paid") return null;
+  const rawEventId = input.event_id?.trim() ? (input.event_id as string).trim() : "";
+  return {
+    eventId: rawEventId || `fine-${input.fine_id}-paid`,
+    announcementType: "payment",
+    displayName: null,
+    fineCode: input.fine_code ?? undefined,
+  };
+}
+
+/**
+ * Dedup consumer-level cho feed/toast/TTS/QR rotation theo event key
+ * (event_id, fallback attempt/fine key). Hook đã dedup transport-level;
+ * tracker này chặn cùng nghiệp vụ xử lý hai lần (VD cùng attempt deliver
+ * hai event_id khác nhau, hoặc payment + allocation + fund cùng giao dịch).
+ */
+export function createKioskDeduper(options?: {
+  ttlMs?: number;
+  maxEntries?: number;
+  now?: () => number;
+}) {
+  const ttlMs = options?.ttlMs ?? KIOSK_SEEN_TTL_MS;
+  const maxEntries = options?.maxEntries ?? KIOSK_SEEN_MAX_ENTRIES;
+  const now = options?.now ?? Date.now;
+  const seen = new Map<string, number>();
+
+  function prune(at: number) {
+    for (const [key, expiry] of seen) {
+      if (expiry <= at) seen.delete(key);
+    }
+    while (seen.size > maxEntries) {
+      const oldest = seen.keys().next().value as string | undefined;
+      if (!oldest) break;
+      seen.delete(oldest);
+    }
+  }
+
+  return {
+    /** Trả true khi key đã thấy (trùng) — caller bỏ qua feed/toast/TTS/rotation. */
+    mark(key: string): boolean {
+      if (!key) return false;
+      const at = now();
+      prune(at);
+      if (seen.has(key)) return true;
+      seen.set(key, at + ttlMs);
+      prune(at);
+      return false;
+    },
+    size(): number {
+      prune(now());
+      return seen.size;
+    },
+  };
+}
+
+export function kioskCheckInDedupKey(event: { event_id?: string | null; attempt_id: number }): string {
+  const raw = event.event_id?.trim() ? (event.event_id as string).trim() : "";
+  return raw || `checkin-${event.attempt_id}`;
+}
+
+export function kioskFinePaidDedupKey(event: { event_id?: string | null; fine_id: string }): string {
+  const raw = event.event_id?.trim() ? (event.event_id as string).trim() : "";
+  return raw || `fine-${event.fine_id}-paid`;
+}
+
+export type KioskTtsTab = "checkin" | "late";
+
+/**
+ * Phân TTS theo tab kiosk để mở 2 tab không đọc trùng:
+ * - tab checkin chỉ đọc điểm danh.
+ * - tab late chỉ đọc thanh toán.
+ * Data reload (feed/toast/late list/rotation) vẫn chạy ở cả 2 tab.
+ */
+export function shouldSpeakCheckInForKioskTab(tab: KioskTtsTab): boolean {
+  return tab === "checkin";
+}
+
+export function shouldSpeakPaymentForKioskTab(tab: KioskTtsTab): boolean {
+  return tab === "late";
+}
+
+function logKioskTts(message: string, details?: Record<string, unknown>) {
+  console.info(`[Kiosk TTS] ${message}`, details ?? {});
+}
+
 function methodLabel(method: FeedItem["method"]) {
   return method.toUpperCase();
 }
@@ -80,11 +276,13 @@ export function KioskScreen({
   timezone,
   bank,
   initialSession,
+  initialTtsConfig,
 }: {
   orgId: string;
   timezone: string;
   bank: PaymentBank | null;
   initialSession: SessionInfo | null;
+  initialTtsConfig?: TtsConfig | null;
 }) {
   const supabase = createClient();
   const searchParams = useSearchParams();
@@ -111,20 +309,50 @@ export function KioskScreen({
   const [wakeLocked, setWakeLocked] = useState(false);
 
   const wakeLockRef = useRef<WakeLockSentinel | null>(null);
-  const ttsTimerRef = useRef<number | null>(null);
-  const [expanded, setExpanded] = useState<LateRow | null>(null);
+  // Modal chỉ giữ selected fine id; row luôn tra lại từ snapshot mới nhất để không stale.
+  const [selectedFineId, setSelectedFineId] = useState<string | null>(null);
 
   const defaultLateDate = initialSession?.work_date ?? formatWorkDateLocal(new Date(), timezone);
   const [lateDate, setLateDate] = useState(defaultLateDate);
   const [lateRows, setLateRows] = useState<LateRow[]>([]);
   const [lateLoading, setLateLoading] = useState(false);
+  // Late tab đang ẩn: đánh dấu stale thay vì fetch nền, lấy snapshot mới khi mở tab.
+  const [lateStale, setLateStale] = useState(false);
   const { success: toastSuccess, error: toastError } = useToast();
   const generateCodesRef = useRef<((force?: boolean) => Promise<void>) | null>(null);
   const lastSuccessfulCheckInRef = useRef<string | null>(initialSession?.last_successful_check_in_at ?? null);
 
+  // B07 realtime/TTS refs.
+  const engineRef = useRef<TtsEngine | null>(null);
+  const deduperRef = useRef(createKioskDeduper());
+  const lateDateRef = useRef(lateDate);
+  const liveRowsRef = useRef(lateRows);
+  const tabRef = useRef(tab);
+  const requestIdRef = useRef(0);
+  const coalesceTimerRef = useRef<number | null>(null);
+  const rotationInFlightRef = useRef(false);
+  const rotationQueuedRef = useRef(false);
+  const initialTtsConfigRef = useRef(initialTtsConfig ?? null);
+
   useEffect(() => {
     mcOnRef.current = mcOn;
   }, [mcOn]);
+
+  useEffect(() => {
+    lateDateRef.current = lateDate;
+  }, [lateDate]);
+
+  useEffect(() => {
+    liveRowsRef.current = lateRows;
+  }, [lateRows]);
+
+  useEffect(() => {
+    tabRef.current = tab;
+  }, [tab]);
+
+  useEffect(() => {
+    initialTtsConfigRef.current = initialTtsConfig ?? null;
+  }, [initialTtsConfig]);
 
   useEffect(() => {
     // Keep browser-only speech controls out of the server/hydration markup.
@@ -132,12 +360,86 @@ export function KioskScreen({
     setTtsTestReady(true);
   }, []);
 
+  // TTS engine sống theo vòng đời kiosk: tạo một lần, destroy khi unmount.
+  // Lỗi/mute loa không bao giờ chặn toast/feed/reload/QR rotation (TTS luôn
+  // chạy cuối handler trong try/catch riêng).
   useEffect(() => {
+    const engine = createTtsEngine();
+    engineRef.current = engine;
+    try {
+      const config = normalizeTtsConfig(initialTtsConfigRef.current ?? {});
+      engine.updateConfig(config, timezone);
+      logKioskTts("engine initialized", {
+        timezone,
+        enabledEvents: config.enabledEvents,
+        locale: config.locale,
+        preferredVoice: config.preferredVoice,
+        cooldownSeconds: config.cooldownSeconds,
+        quietEnabled: config.quietEnabled,
+        quietStart: config.quietStart,
+        quietEnd: config.quietEnd,
+        muted: !mcOnRef.current,
+      });
+      if (!mcOnRef.current) engine.mute();
+    } catch (error) {
+      logKioskTts("engine init failed", { error });
+      // Engine vô hiệu hóa êm — UI nghiệp vụ không bị ảnh hưởng.
+    }
     return () => {
-      if (ttsTimerRef.current !== null) window.clearTimeout(ttsTimerRef.current);
-      if ("speechSynthesis" in window) window.speechSynthesis.cancel();
+      try {
+        logKioskTts("engine destroyed");
+        engine.destroy();
+      } catch {
+        // Bỏ qua lỗi cleanup.
+      }
+      engineRef.current = null;
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- engine tạo một lần theo vòng đời
   }, []);
+
+  // Config server mới (prop từ page) áp dụng cho lần phát tiếp theo.
+  useEffect(() => {
+    try {
+      const config = normalizeTtsConfig(initialTtsConfig ?? {});
+      engineRef.current?.updateConfig(config, timezone);
+      logKioskTts("config updated from props", {
+        timezone,
+        enabledEvents: config.enabledEvents,
+        locale: config.locale,
+        preferredVoice: config.preferredVoice,
+        cooldownSeconds: config.cooldownSeconds,
+        quietEnabled: config.quietEnabled,
+        quietStart: config.quietStart,
+        quietEnd: config.quietEnd,
+      });
+    } catch (error) {
+      logKioskTts("config update from props failed", { error });
+      // Giữ config cũ khi normalize lỗi.
+    }
+  }, [initialTtsConfig, timezone]);
+
+  // Toggle "Đọc kết quả" ánh xạ sang mute/unmute engine.
+  useEffect(() => {
+    try {
+      if (mcOn) {
+        engineRef.current?.unmute();
+        logKioskTts("local audio toggle on");
+      } else {
+        engineRef.current?.mute();
+        logKioskTts("local audio toggle off");
+      }
+    } catch (error) {
+      logKioskTts("local audio toggle failed", { mcOn, error });
+      // Mute/unmute không ảnh hưởng UI nghiệp vụ.
+    }
+  }, [mcOn]);
+
+  useEffect(
+    () => () => {
+      if (coalesceTimerRef.current !== null) window.clearTimeout(coalesceTimerRef.current);
+    },
+    [],
+  );
 
   const qrSecondsRemaining = qrDataUrl
     ? Math.max(0, Math.ceil((codesGeneratedAt + CODE_TTL_MS - now.getTime()) / 1000))
@@ -206,6 +508,37 @@ export function KioskScreen({
   useEffect(() => {
     generateCodesRef.current = generateCodes;
   }, [generateCodes]);
+
+  /**
+   * Serialize/coalesce QR rotation: event dồn không tạo nhiều lượt generate
+   * cạnh tranh. Lượt đang chạy xong sẽ chạy thêm đúng một lượt nếu có event
+   * mới đến trong lúc đó. Nghiệp vụ QR/OTP core (TTL/revoke/throttling) giữ nguyên.
+   */
+  const requestQrRotation = useCallback(() => {
+    if (rotationInFlightRef.current) {
+      rotationQueuedRef.current = true;
+      return;
+    }
+    rotationInFlightRef.current = true;
+    function pump(): void {
+      const run = generateCodesRef.current;
+      if (!run) {
+        rotationInFlightRef.current = false;
+        return;
+      }
+      run(true)
+        .catch(() => { })
+        .finally(() => {
+          if (rotationQueuedRef.current) {
+            rotationQueuedRef.current = false;
+            pump();
+          } else {
+            rotationInFlightRef.current = false;
+          }
+        });
+    }
+    pump();
+  }, []);
 
   const startWakeLock = useCallback(async () => {
     try {
@@ -277,21 +610,63 @@ export function KioskScreen({
 
   const loadLate = useCallback(
     async (date: string) => {
+      const requestId = (requestIdRef.current += 1);
       setLateLoading(true);
       try {
         const { data } = await supabase.rpc("get_daily_late_list", {
           p_organization_id: orgId,
           p_work_date: date,
         });
+        // Response của ngày cũ không được ghi đè ngày mới.
+        if (requestIdRef.current !== requestId) return;
+        if (lateDateRef.current !== date) return;
         setLateRows((data ?? []) as LateRow[]);
+        if (tabRef.current === "late") setLateStale(false);
       } catch {
+        if (requestIdRef.current !== requestId) return;
+        if (lateDateRef.current !== date) return;
         setLateRows([]);
       } finally {
-        setLateLoading(false);
+        if (requestIdRef.current === requestId && lateDateRef.current === date) {
+          setLateLoading(false);
+        }
       }
     },
     [supabase, orgId],
   );
+
+  const scheduleLateReload = useCallback(() => {
+    if (coalesceTimerRef.current !== null) return;
+    coalesceTimerRef.current = window.setTimeout(() => {
+      coalesceTimerRef.current = null;
+      loadLate(lateDateRef.current).catch(() => { });
+    }, KIOSK_LATE_RELOAD_COALESCE_MS);
+  }, [loadLate]);
+
+  /** Late tab đang ẩn thì đánh dấu stale; snapshot mới được lấy khi mở tab. */
+  const handleLateInvalidation = useCallback(() => {
+    if (tabRef.current !== "late") {
+      setLateStale(true);
+      return;
+    }
+    scheduleLateReload();
+  }, [scheduleLateReload]);
+
+  const shouldReloadFor = useCallback((event: KioskLateScopeEvent) => {
+    const knownFineIds = liveRowsRef.current
+      .map((row) => row.fine_id)
+      .filter((id): id is string => !!id);
+    return shouldReloadKioskLateForEvent(event, lateDateRef.current, knownFineIds);
+  }, []);
+
+  // Mở late tab sau thời gian ở tab khác: lấy snapshot mới nếu đã stale.
+  useEffect(() => {
+    if (tab === "late" && lateStale) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- fetch snapshot khi mở tab stale
+      setLateStale(false);
+      loadLate(lateDateRef.current).catch(() => { });
+    }
+  }, [tab, lateStale, loadLate]);
 
   const loadRecentFeed = useCallback(async () => {
     const { data, error } = await supabase.rpc("get_recent_check_in_attempts", {
@@ -321,6 +696,34 @@ export function KioskScreen({
     );
   }, [supabase, orgId]);
 
+  /** Reload TTS settings từ server; áp dụng cho lần phát tiếp theo. */
+  const loadTtsSettings = useCallback(async () => {
+    try {
+      const { data, error } = await supabase
+        .from("tts_settings")
+        .select("*")
+        .eq("organization_id", orgId)
+        .maybeSingle();
+      if (error || !data) return;
+      const config = ttsConfigFromRow(data);
+      engineRef.current?.updateConfig(config, timezone);
+      logKioskTts("settings loaded from server", {
+        timezone,
+        enabledEvents: config.enabledEvents,
+        locale: config.locale,
+        preferredVoice: config.preferredVoice,
+        cooldownSeconds: config.cooldownSeconds,
+        quietEnabled: config.quietEnabled,
+        quietStart: config.quietStart,
+        quietEnd: config.quietEnd,
+        updatedAt: (data as { updated_at?: string | null }).updated_at ?? null,
+      });
+    } catch (error) {
+      logKioskTts("settings load failed", { error });
+      // Giữ config cũ — settings lỗi không ảnh hưởng UI nghiệp vụ.
+    }
+  }, [supabase, orgId, timezone]);
+
   useEffect(() => {
     // eslint-disable-next-line react-hooks/set-state-in-effect -- initial activity snapshot
     loadRecentFeed().catch(() => { });
@@ -340,70 +743,257 @@ export function KioskScreen({
     [loadLate],
   );
 
-  const speakText = useCallback(
+  /** Nút test loa dùng cùng engine (bypass quiet/cooldown/dedup theo contract §5.5). */
+  const speakTest = useCallback(
     (text: string) => {
-      if (!("speechSynthesis" in window)) {
-        toastError("Trình duyệt không hỗ trợ đọc TTS.");
-        return;
+      try {
+        if (!("speechSynthesis" in window)) {
+          logKioskTts("test skipped: Speech API unavailable", { text });
+          toastError("Trình duyệt không hỗ trợ đọc TTS.");
+          return;
+        }
+        logKioskTts("test speak", { text, muted: !mcOnRef.current });
+        engineRef.current?.speakTest(text);
+      } catch (error) {
+        logKioskTts("test speak failed", { text, error });
+        // Test loa lỗi không ảnh hưởng nghiệp vụ.
       }
-
-      window.speechSynthesis.cancel();
-      if (ttsTimerRef.current !== null) window.clearTimeout(ttsTimerRef.current);
-      ttsTimerRef.current = window.setTimeout(() => {
-        const utterance = new SpeechSynthesisUtterance(text);
-        const vietnameseVoice = window.speechSynthesis
-          .getVoices()
-          .find((voice) => voice.lang.toLowerCase().startsWith("vi"));
-        if (vietnameseVoice) utterance.voice = vietnameseVoice;
-        utterance.lang = vietnameseVoice?.lang ?? "vi-VN";
-        utterance.rate = 0.9;
-        utterance.pitch = 1;
-        window.speechSynthesis.speak(utterance);
-        ttsTimerRef.current = null;
-      }, 80);
     },
     [toastError],
   );
 
-  const speakTest = useCallback(
-    (text: string) => speakText(text),
-    [speakText],
-  );
+  useOrganizationRealtime(
+    orgId,
+    {
+      onCheckIn: (event) => {
+        // Dedup feed/toast/TTS/QR rotation theo event_id, fallback attempt_id:
+        // cùng attempt deliver hai lần (hai event_id) vẫn chỉ xử lý một lần.
+        const eventKey = event.event_id?.trim() ? event.event_id.trim() : "";
+        if (eventKey && deduperRef.current.mark(eventKey)) {
+          logKioskTts("check-in skipped: duplicate event_id", {
+            eventId: event.event_id,
+            attemptId: event.attempt_id,
+            activeTab: tabRef.current,
+          });
+          return;
+        }
+        if (deduperRef.current.mark(`attempt:${event.attempt_id}`)) {
+          logKioskTts("check-in skipped: duplicate attempt", {
+            eventId: event.event_id,
+            attemptId: event.attempt_id,
+            activeTab: tabRef.current,
+          });
+          return;
+        }
 
-  useOrganizationRealtime(orgId, {
-    onCheckIn: (event) => {
-      const name = event.display_name ?? "Có thành viên";
-      const item: FeedItem = {
-        id: String(event.attempt_id),
-        user_id: event.user_id,
-        method: event.method,
-        succeeded: event.succeeded,
-        rejection_reason: event.rejection_reason,
-        server_received_at: event.server_received_at,
-        display_name: event.display_name,
-      };
-      setFeed((prev) => [item, ...prev.filter((current) => current.id !== item.id).slice(0, 9)]);
-      if (event.succeeded) {
-        toastSuccess(`${name} đã điểm danh.`);
-      } else {
-        toastError(`${name}: ${reasonLabel(event.rejection_reason)}.`);
-      }
-      if (event.succeeded) {
-        lastSuccessfulCheckInRef.current = event.server_received_at;
-        generateCodesRef.current?.(true).catch(() => { });
-      }
-      if (mcOnRef.current && "speechSynthesis" in window) {
-        const text = event.succeeded ? `${name} đã điểm danh` : `${name} điểm danh thất bại`;
-        speakText(text);
-      }
+        const name = event.display_name ?? "Có thành viên";
+        const item: FeedItem = {
+          id: String(event.attempt_id),
+          user_id: event.user_id,
+          method: event.method,
+          succeeded: event.succeeded,
+          rejection_reason: event.rejection_reason,
+          server_received_at: event.server_received_at,
+          display_name: event.display_name,
+        };
+        setFeed((prev) => [item, ...prev.filter((current) => current.id !== item.id).slice(0, 9)]);
+        try {
+          if (event.succeeded) {
+            toastSuccess(`${name} đã điểm danh.`);
+          } else {
+            toastError(`${name}: ${reasonLabel(event.rejection_reason)}.`);
+          }
+        } catch {
+          // Toast lỗi không chặn rotation/reload/TTS.
+        }
+        if (event.succeeded) {
+          lastSuccessfulCheckInRef.current = event.server_received_at;
+          try {
+            requestQrRotation();
+          } catch {
+            // Rotation lỗi không chặn reload/TTS.
+          }
+        }
+        if (shouldReloadFor({ kind: "check-in-status", work_date: event.work_date })) {
+          handleLateInvalidation();
+        }
+        // TTS cuối cùng, try/catch riêng: mute/error không ảnh hưởng các bước trên.
+        // Phân TTS theo tab: tab late không bao giờ đọc check-in.
+        // Check-in thất bại không đọc — chỉ toast/feed.
+        if (!event.succeeded) {
+          logKioskTts("check-in not spoken: failed attempt", {
+            eventId: event.event_id,
+            attemptId: event.attempt_id,
+            reason: event.rejection_reason,
+            activeTab: tabRef.current,
+          });
+        } else if (!shouldSpeakCheckInForKioskTab(tabRef.current)) {
+          logKioskTts("check-in ignored on late tab: check-in speeches only on checkin tab", {
+            eventId: event.event_id,
+            attemptId: event.attempt_id,
+            attendanceState: event.attendance_state ?? null,
+            activeTab: tabRef.current,
+          });
+        } else if (!mcOnRef.current) {
+          logKioskTts("check-in not spoken: local audio off", {
+            eventId: event.event_id,
+            attemptId: event.attempt_id,
+            attendanceState: event.attendance_state ?? null,
+            activeTab: tabRef.current,
+          });
+        } else {
+          try {
+            const announcement = mapCheckInToAnnouncement({
+              event_id: event.event_id,
+              attempt_id: event.attempt_id,
+              display_name: event.display_name,
+              attendance_state: event.attendance_state ?? null,
+              late_minutes: event.late_minutes ?? null,
+              server_received_at: event.server_received_at,
+              succeeded: true,
+            });
+            if (announcement) {
+              logKioskTts("check-in enqueue", {
+                eventId: announcement.eventId,
+                announcementType: announcement.announcementType,
+                displayName: announcement.displayName,
+                lateMinutes: announcement.lateMinutes ?? null,
+                attendanceState: event.attendance_state ?? null,
+                activeTab: tabRef.current,
+              });
+              engineRef.current?.enqueue(announcement);
+            } else {
+              logKioskTts("check-in not spoken: no announcement", {
+                eventId: event.event_id,
+                attemptId: event.attempt_id,
+                attendanceState: event.attendance_state ?? null,
+              });
+            }
+          } catch (error) {
+            logKioskTts("check-in enqueue failed", { eventId: event.event_id, attemptId: event.attempt_id, error });
+            // Bỏ qua lỗi loa.
+          }
+        }
+      },
+      onAttendance: (event) => {
+        if (shouldReloadFor({ kind: "attendance-status", work_date: event.work_date })) {
+          handleLateInvalidation();
+        }
+      },
+      onFine: (event) => {
+        // Dedup transport: cùng event_id deliver 2 lần thì bỏ lần 2.
+        // Không dedup theo fine_id vì cùng fine có nhiều event hợp lệ
+        // (unpaid -> paid, rollback -> unpaid). Reload luôn chạy.
+        const eventKey = event.event_id?.trim() ? event.event_id.trim() : "";
+        if (eventKey && deduperRef.current.mark(eventKey)) {
+          logKioskTts("fine skipped: duplicate event_id", {
+            eventId: event.event_id,
+            fineId: event.fine_id,
+            fineCode: event.fine_code ?? null,
+            activeTab: tabRef.current,
+          });
+          return;
+        }
+
+        if (
+          shouldReloadFor({ kind: "fine-status", work_date: event.work_date, fine_id: event.fine_id })
+        ) {
+          handleLateInvalidation();
+        }
+        // Phân TTS theo tab trước khi xét status để 2 tab log khác nhau:
+        // tab checkin không bao giờ đọc fine, tab late mới xét paid/unpaid.
+        // Payment chỉ đọc một lần khi fine chuyển paid; waived không đọc như payment.
+        // Allocation/fund cùng giao dịch không enqueue thêm (engine cũng dedup
+        // payment theo fineCode trong 60s theo contract §8.3).
+        if (!shouldSpeakPaymentForKioskTab(tabRef.current)) {
+          logKioskTts("fine ignored on checkin tab: payment speeches only on late tab", {
+            eventId: event.event_id,
+            fineId: event.fine_id,
+            fineCode: event.fine_code ?? null,
+            status: event.status,
+            activeTab: tabRef.current,
+          });
+        } else if (event.status !== "paid") {
+          logKioskTts("fine not spoken: status is not paid", {
+            eventId: event.event_id,
+            fineId: event.fine_id,
+            fineCode: event.fine_code ?? null,
+            status: event.status,
+            activeTab: tabRef.current,
+          });
+        } else if (!mcOnRef.current) {
+          logKioskTts("payment not spoken: local audio off", {
+            eventId: event.event_id,
+            fineId: event.fine_id,
+            fineCode: event.fine_code ?? null,
+            activeTab: tabRef.current,
+          });
+        } else {
+          try {
+            const announcement = mapFineToPaymentAnnouncement({
+              event_id: event.event_id,
+              fine_id: event.fine_id,
+              fine_code: event.fine_code ?? null,
+              status: event.status,
+            });
+            if (announcement) {
+              logKioskTts("payment enqueue", {
+                eventId: announcement.eventId,
+                fineId: event.fine_id,
+                fineCode: announcement.fineCode ?? null,
+                activeTab: tabRef.current,
+              });
+              engineRef.current?.enqueue(announcement);
+            } else {
+              logKioskTts("payment not spoken: no announcement", {
+                eventId: event.event_id,
+                fineId: event.fine_id,
+                fineCode: event.fine_code ?? null,
+              });
+            }
+          } catch (error) {
+            logKioskTts("payment enqueue failed", { eventId: event.event_id, fineId: event.fine_id, error });
+            // Bỏ qua lỗi loa.
+          }
+        }
+      },
+      onFineAllocation: (event) => {
+        if (
+          shouldReloadFor({
+            kind: "fine-allocation-status",
+            work_date: event.work_date,
+            old_work_date: event.old_work_date,
+            fine_id: event.fine_id,
+            old_fine_id: event.old_fine_id,
+          })
+        ) {
+          handleLateInvalidation();
+        }
+      },
+      onFund: (event) => {
+        if (
+          shouldReloadFor({ kind: "fund-status", related_fine_ids: event.related_fine_ids ?? [] })
+        ) {
+          handleLateInvalidation();
+        }
+      },
+      onTtsSettings: () => {
+        logKioskTts("settings realtime event received");
+        loadTtsSettings().catch(() => { });
+      },
     },
-    onFine: () => {
-      if (tab === "late") loadLate(lateDate).catch(() => { });
+    {
+      // Reconnect/subscribe thành công: lấy lại snapshot (late/feed/settings),
+      // không phát lại TTS/toast lịch sử.
+      onSnapshotReady: () => {
+        logKioskTts("snapshot ready: reload settings/feed/session/late without replaying TTS");
+        loadTtsSettings().catch(() => { });
+        loadRecentFeed().catch(() => { });
+        refreshSession().catch(() => { });
+        handleLateInvalidation();
+      },
     },
-    onFund: () => {
-      if (tab === "late") loadLate(lateDate).catch(() => { });
-    },
-  });
+  );
 
   const clock = clockReady
     ? new Intl.DateTimeFormat("vi-VN", {
@@ -425,6 +1015,8 @@ export function KioskScreen({
   const latePending = lateRows.filter((row) => !row.fine_id);
   const latePaid = lateRows.filter((row) => row.fine_id && (row.fine_status === "paid" || row.fine_status === "waived"));
   const lateDisplayed = lateTab === "paid" ? latePaid : [...lateUnpaid, ...latePending];
+  // Tra row mới nhất theo selected fine id để payment/waive/allocation cập nhật modal ngay.
+  const selectedRow = selectedFineId ? (lateRows.find((row) => row.fine_id === selectedFineId) ?? null) : null;
 
   return (
     <div className="flex min-h-dvh flex-col bg-[var(--paper)]">
@@ -683,7 +1275,7 @@ export function KioskScreen({
                           {row.fine_status !== "paid" && row.fine_status !== "waived" && (row.outstanding_vnd ?? 0) > 0 ? (
                             <button
                               type="button"
-                              onClick={() => setExpanded(row)}
+                              onClick={() => row.fine_id && setSelectedFineId(row.fine_id)}
                               className="rounded-xl bg-[var(--signal)] px-4 py-2 text-sm font-black text-[var(--paper)]"
                             >
                               QR thanh toán
@@ -702,18 +1294,22 @@ export function KioskScreen({
         </div>
       </main>
 
-      <Modal open={expanded !== null} onClose={() => setExpanded(null)} title="QR thanh toán">
-        {expanded?.fine_id ? (
+      <Modal open={selectedFineId !== null} onClose={() => setSelectedFineId(null)} title="QR thanh toán">
+        {selectedRow?.fine_id ? (
           <PaymentQrPanel
-            fineCode={expanded.fine_code ?? "—"}
-            originalVnd={expanded.original_vnd ?? 0}
-            allocatedVnd={expanded.allocated_vnd ?? 0}
-            outstandingVnd={expanded.outstanding_vnd ?? 0}
-            status={(expanded.fine_status as "unpaid" | "paid" | "waived") ?? "unpaid"}
-            memberName={expanded.display_name ?? "Thành viên"}
+            fineCode={selectedRow.fine_code ?? "—"}
+            originalVnd={selectedRow.original_vnd ?? 0}
+            allocatedVnd={selectedRow.allocated_vnd ?? 0}
+            outstandingVnd={selectedRow.outstanding_vnd ?? 0}
+            status={(selectedRow.fine_status as "unpaid" | "paid" | "waived") ?? "unpaid"}
+            memberName={selectedRow.display_name ?? "Thành viên"}
             bank={bank}
           />
-        ) : null}
+        ) : (
+          <p className="px-1 py-6 text-center text-sm text-[var(--ink-soft)]">
+            Phiếu này đã chuyển trạng thái hoặc không còn trong ngày đang xem.
+          </p>
+        )}
       </Modal>
     </div>
   );

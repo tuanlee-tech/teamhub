@@ -26,11 +26,17 @@ export default async function FinesPage() {
       .eq("organization_id", orgId)
       .eq("user_id", context.userId)
       .order("created_at", { ascending: false }),
-    supabase.from("fine_allocations").select("fine_id, amount_vnd"),
+    supabase.from("fine_allocations").select("fine_id, amount_vnd, fund_transactions(voided_at)"),
   ]);
 
   const allocationByFine = new Map<string, number>();
   for (const row of allocations ?? []) {
+    const fund = row.fund_transactions as unknown;
+    const funds = Array.isArray(fund) ? fund : [fund];
+    const isEffective = funds.every(
+      (item) => item == null || (item as { voided_at: string | null }).voided_at == null,
+    );
+    if (!isEffective) continue;
     allocationByFine.set(row.fine_id, (allocationByFine.get(row.fine_id) ?? 0) + row.amount_vnd);
   }
 
@@ -56,7 +62,7 @@ export default async function FinesPage() {
         </p>
         <h1 className="display-type mt-1 text-3xl">Khoản của bạn</h1>
       </section>
-      <FineList organizationId={orgId} rows={rows} />
+      <FineList organizationId={orgId} userId={context.userId} rows={rows} />
     </div>
   );
 }

@@ -2,6 +2,7 @@ import Link from "next/link";
 
 import { signOut } from "@/app/(auth)/actions";
 import { Logo, SecondaryButton } from "@/components/ui";
+import { LogOut } from "lucide-react";
 
 type ModuleShellProps = {
   eyebrow: string;
@@ -18,9 +19,16 @@ export function ModuleShell({ eyebrow, title, description, children }: ModuleShe
           <Logo className="h-9 w-auto" />
         </Link>
         <div className="flex items-center gap-4">
-          <span className="stamp text-[var(--ink-soft)]">{eyebrow}</span>
+          {eyebrow && <span className="stamp text-[var(--ink-soft)]">{eyebrow}</span>}
           <form action={signOut}>
-            <SecondaryButton type="submit">Đăng xuất</SecondaryButton>
+            <button
+              type="submit"
+              className="cursor-pointer grid size-9 place-items-center rounded-full border border-[var(--line)] bg-[var(--white)] text-xs font-bold text-[var(--ink-soft)] transition active:translate-y-px"
+              aria-label="Đăng xuất"
+              title="Đăng xuất"
+            >
+              <LogOut className="size-4" strokeWidth={2.2} />
+            </button>
           </form>
         </div>
       </header>

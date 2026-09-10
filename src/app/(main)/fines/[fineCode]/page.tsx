@@ -15,7 +15,7 @@ export default async function FineDetailPage({
   const supabase = await createClient();
   const orgId = context.membership.organizationId;
 
-  const [{ data: fine }, { data: settings }, { data: profileRow }] = await Promise.all([
+  const [{ data: fine }, { data: settings }] = await Promise.all([
     supabase
       .from("fines")
       .select(
@@ -31,21 +31,35 @@ export default async function FineDetailPage({
       )
       .eq("organization_id", orgId)
       .maybeSingle(),
-    supabase
-      .from("profiles")
-      .select("display_name")
-      .eq("user_id", context.userId)
-      .maybeSingle(),
   ]);
 
   if (!fine) notFound();
 
+  // Dùng đúng owner của fine (fine.user_id), không nhầm viewer (context.userId).
+  // RLS fines chỉ cho owner/manager đọc nên query này không nới quyền.
+  const { data: ownerProfile } = await supabase
+    .from("profiles")
+    .select("display_name")
+    .eq("user_id", fine.user_id)
+    .maybeSingle();
+
+  // Outstanding = original - effective allocations.
+  // Contract §13 + get_daily_late_list: chỉ tính allocation có fund chưa void.
   const { data: allocations } = await supabase
     .from("fine_allocations")
-    .select("amount_vnd, fund_transactions!inner(voided_at)")
+    .select("amount_vnd, fund_transactions(voided_at)")
     .eq("fine_id", fine.id);
 
-  const allocatedVnd = (allocations ?? []).reduce((sum, row) => sum + (row.amount_vnd ?? 0), 0);
+  const allocatedVnd = (allocations ?? [])
+    .filter((row) => {
+      // Supabase có thể trả join dạng object hoặc array; void = đã void.
+      const fund = row.fund_transactions as unknown;
+      const funds = Array.isArray(fund) ? fund : [fund];
+      return funds.every(
+        (item) => item == null || (item as { voided_at: string | null }).voided_at == null,
+      );
+    })
+    .reduce((sum, row) => sum + (row.amount_vnd ?? 0), 0);
   const outstandingVnd = Math.max(fine.amount_vnd - allocatedVnd, 0);
 
   const attendance = fine.attendance_records as
@@ -61,6 +75,7 @@ export default async function FineDetailPage({
   return (
     <FineDetail
       fine={{
+        id: fine.id,
         code: fine.code,
         originalVnd: fine.amount_vnd,
         allocatedVnd,
@@ -69,7 +84,9 @@ export default async function FineDetailPage({
         workDate: workDate as string | null,
         createdAt: fine.created_at,
       }}
-      memberName={profileRow?.display_name ?? context.profile.displayName}
+      memberName={ownerProfile?.display_name ?? context.profile.displayName}
+      ownerUserId={fine.user_id}
+      organizationId={orgId}
       isManager={context.membership.role === "manager"}
       bank={paymentBankFromSettings(settings)}
     />

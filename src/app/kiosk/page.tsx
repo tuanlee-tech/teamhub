@@ -1,13 +1,14 @@
 import { KioskScreen } from "@/components/kiosk/kiosk-screen";
 import { requireKiosk } from "@/lib/auth";
 import { createClient } from "@/lib/supabase/server";
+import { DEFAULT_TTS_CONFIG, ttsConfigFromRow } from "@/lib/tts";
 
 export default async function KioskPage() {
   const context = await requireKiosk();
   const supabase = await createClient();
   const orgId = context.membership.organizationId;
 
-  const [{ data: settings }, { data: session }] = await Promise.all([
+  const [{ data: settings }, { data: session }, { data: tts }] = await Promise.all([
     supabase
       .from("organization_settings")
       .select(
@@ -16,12 +17,14 @@ export default async function KioskPage() {
       .eq("organization_id", orgId)
       .maybeSingle(),
     supabase.rpc("kiosk_session_info", { p_organization_id: orgId }),
+    supabase.from("tts_settings").select("*").eq("organization_id", orgId).maybeSingle(),
   ]);
 
   return (
     <KioskScreen
       orgId={orgId}
       timezone={settings?.timezone ?? "Asia/Ho_Chi_Minh"}
+      initialTtsConfig={tts ? ttsConfigFromRow(tts) : DEFAULT_TTS_CONFIG}
       initialSession={(session ?? null) as {
         active: boolean;
         work_date: string | null;

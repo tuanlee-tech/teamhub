@@ -1,228 +1,205 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { normalizeTransferText } from "@/lib/domain/payment";
+import {
+  extractFineCode,
+  isFreshSePayTimestamp,
+  normalizeSePayTransaction,
+  parseSePayTimestamp,
+  verifySePaySignature,
+} from "@/lib/sepay/webhook";
 
 export const runtime = "edge";
 
 function getSecret() {
-  return process.env.TEAMHUB_SEPAY_SECRET ?? process.env.SEPAY_WEBHOOK_SECRET;
+  return process.env.SEPAY_WEBHOOK_SECRET ?? process.env.TEAMHUB_SEPAY_SECRET;
 }
 
-async function verifyHmac(rawBody: string, signature: string, secret: string): Promise<boolean> {
-  const encoder = new TextEncoder();
-  const keyData = encoder.encode(secret);
-  const msgData = encoder.encode(rawBody);
-  const key = await crypto.subtle.importKey("raw", keyData, { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
-  const sig = await crypto.subtle.sign("HMAC", key, msgData);
-  const sigBase64 = btoa(String.fromCharCode(...new Uint8Array(sig)));
-  return sigBase64 === signature;
+function fail(status: number, message: string) {
+  return NextResponse.json({ success: false, message }, { status });
 }
 
-function extractFineCode(content: string): string | null {
-  // Fine code format: F + 4-11 alphanumeric chars
-  const match = content.match(/\bF[A-Z0-9]{4,11}\b/);
-  return match ? match[0] : null;
-}
-
-function normalizeContent(content: string): string {
-  return normalizeTransferText(content);
+function ok(extra: Record<string, unknown> = {}) {
+  return NextResponse.json({ success: true, ...extra });
 }
 
 export async function POST(request: NextRequest) {
   const secret = getSecret();
   if (!secret) {
-    return NextResponse.json({ error: "Webhook secret not configured" }, { status: 500 });
+    return fail(500, "Webhook secret not configured");
   }
 
   const signature = request.headers.get("X-SePay-Signature");
-  if (!signature) {
-    return NextResponse.json({ error: "Missing signature" }, { status: 401 });
+  const timestampHeader = request.headers.get("X-SePay-Timestamp");
+  if (!signature || !timestampHeader) {
+    return fail(401, "Unauthorized");
   }
 
+  const timestampMs = parseSePayTimestamp(timestampHeader);
+  if (timestampMs === null || !isFreshSePayTimestamp(timestampMs)) {
+    return fail(401, "Request expired");
+  }
+
+  // Raw body — never re-serialize parsed JSON, SePay signs the exact bytes.
   const rawBody = await request.text();
-
-  // Verify HMAC
-  const valid = await verifyHmac(rawBody, signature, secret);
+  const valid = await verifySePaySignature({ rawBody, timestamp: timestampHeader, signature, secret });
   if (!valid) {
-    return NextResponse.json({ error: "Invalid signature" }, { status: 401 });
+    return fail(401, "Invalid signature");
   }
 
-  let payload: Record<string, unknown>;
+  let payload: unknown;
   try {
     payload = JSON.parse(rawBody);
   } catch {
-    return NextResponse.json({ error: "Invalid JSON" }, { status: 400 });
+    return fail(400, "Invalid JSON");
   }
 
-  // Check timestamp within 5 minutes
-  const transactionAt = payload.transaction_at as string | undefined;
-  if (transactionAt) {
-    const txTime = new Date(transactionAt).getTime();
-    const now = Date.now();
-    if (Math.abs(now - txTime) > 5 * 60 * 1000) {
-      return NextResponse.json({ error: "Timestamp too old" }, { status: 400 });
-    }
+  const tx = normalizeSePayTransaction(payload);
+  if (!tx) {
+    return fail(400, "Missing required fields");
   }
 
   const admin = createAdminClient();
+  const eventBase = {
+    sepay_transaction_id: tx.sepayTransactionId,
+    gateway: tx.gateway,
+    account_number: tx.accountNumber,
+    transfer_type: tx.transferType,
+    transfer_amount: tx.transferAmount,
+    transaction_at: tx.transactionAt,
+    content: tx.content,
+    reference_code: tx.referenceCode,
+    raw_payload: payload,
+  };
 
-  // Extract fields
-  const sepayTransactionId = payload.id as number | undefined;
-  const gateway = payload.gateway as string | undefined;
-  const accountNumber = payload.account_number as string | undefined;
-  const transferType = payload.transfer_type as string | undefined;
-  const transferAmount = payload.transfer_amount as number | undefined;
-  const content = payload.content as string | undefined;
-  const referenceCode = payload.reference_code as string | undefined;
-
-  if (!sepayTransactionId || !transferAmount || !content) {
-    return NextResponse.json({ error: "Missing required fields" }, { status: 400 });
+  // Only incoming credit transactions move money in — log the rest as ignored.
+  if (tx.transferType !== "in") {
+    await admin.from("sepay_webhook_events").upsert(
+      { ...eventBase, organization_id: null, reconciliation_status: "ignored", processing_error: "Non-incoming transfer" },
+      { onConflict: "sepay_transaction_id" },
+    );
+    return ok({ ignored: true });
   }
 
-  // Only process incoming credit transactions
-  if (transferType !== "in") {
-    return NextResponse.json({ ok: true, ignored: true });
-  }
-
-  // Try to find organization by account number
+  // Resolve organization by bank account number.
   const { data: orgSettings } = await admin
     .from("organization_settings")
     .select("organization_id, bank_account_number, transfer_description_rule")
-    .eq("bank_account_number", accountNumber ?? "")
+    .eq("bank_account_number", tx.accountNumber ?? "")
     .maybeSingle();
 
   if (!orgSettings) {
-    // Account not found in our system - log but don't error (could be other income)
-    await admin.from("sepay_webhook_events").insert({
-      sepay_transaction_id: sepayTransactionId,
-      gateway,
-      account_number: accountNumber,
-      transfer_type: transferType,
-      transfer_amount: transferAmount,
-      transaction_at: transactionAt ? new Date(transactionAt).toISOString() : null,
-      content,
-      reference_code: referenceCode,
-      raw_payload: payload,
-      reconciliation_status: "unmatched",
-      processing_error: "Account not configured",
-    });
-    return NextResponse.json({ ok: true, unmatched: true });
+    // Unknown account — not visible to any manager (organization_id stays NULL).
+    await admin.from("sepay_webhook_events").upsert(
+      {
+        ...eventBase,
+        organization_id: null,
+        reconciliation_status: "unmatched",
+        processing_error: "Account not configured",
+      },
+      { onConflict: "sepay_transaction_id" },
+    );
+    return ok({ unmatched: true });
   }
 
-  // Verify description rule matches
-  const normalizedContent = normalizeContent(content);
+  const organizationId = orgSettings.organization_id as string;
+
+  // Verify description rule matches.
+  const normalizedContent = normalizeTransferText(tx.content);
   const normalizedRule = normalizeTransferText(orgSettings.transfer_description_rule ?? "");
   if (normalizedRule && !normalizedContent.includes(normalizedRule)) {
-    await admin.from("sepay_webhook_events").insert({
-      sepay_transaction_id: sepayTransactionId,
-      gateway,
-      account_number: accountNumber,
-      transfer_type: transferType,
-      transfer_amount: transferAmount,
-      transaction_at: transactionAt ? new Date(transactionAt).toISOString() : null,
-      content,
-      reference_code: referenceCode,
-      raw_payload: payload,
-      reconciliation_status: "unmatched",
-      processing_error: "Description rule mismatch",
-    });
-    return NextResponse.json({ ok: true, unmatched: true });
+    await admin.from("sepay_webhook_events").upsert(
+      {
+        ...eventBase,
+        organization_id: organizationId,
+        reconciliation_status: "unmatched",
+        processing_error: "Description rule mismatch",
+      },
+      { onConflict: "sepay_transaction_id" },
+    );
+    return ok({ unmatched: true });
   }
 
-  // Extract fine code from content
-  const fineCode = extractFineCode(content);
+  // Extract fine code from content.
+  const fineCode = extractFineCode(tx.content);
   if (!fineCode) {
-    await admin.from("sepay_webhook_events").insert({
-      sepay_transaction_id: sepayTransactionId,
-      gateway,
-      account_number: accountNumber,
-      transfer_type: transferType,
-      transfer_amount: transferAmount,
-      transaction_at: transactionAt ? new Date(transactionAt).toISOString() : null,
-      content,
-      reference_code: referenceCode,
-      raw_payload: payload,
-      reconciliation_status: "unmatched",
-      processing_error: "No fine code found in content",
-    });
-    return NextResponse.json({ ok: true, unmatched: true });
+    await admin.from("sepay_webhook_events").upsert(
+      {
+        ...eventBase,
+        organization_id: organizationId,
+        reconciliation_status: "unmatched",
+        processing_error: "No fine code found in content",
+      },
+      { onConflict: "sepay_transaction_id" },
+    );
+    return ok({ unmatched: true });
   }
 
-  // Find matching unpaid fine
+  // Find matching unpaid fine.
   const { data: fine } = await admin
     .from("fines")
     .select("id, organization_id, user_id, amount_vnd, status, code")
     .eq("code", fineCode)
-    .eq("organization_id", orgSettings.organization_id)
+    .eq("organization_id", organizationId)
     .eq("status", "unpaid")
     .maybeSingle();
 
   if (!fine) {
-    await admin.from("sepay_webhook_events").insert({
-      sepay_transaction_id: sepayTransactionId,
-      gateway,
-      account_number: accountNumber,
-      transfer_type: transferType,
-      transfer_amount: transferAmount,
-      transaction_at: transactionAt ? new Date(transactionAt).toISOString() : null,
-      content,
-      reference_code: referenceCode,
-      raw_payload: payload,
-      reconciliation_status: "unmatched",
-      processing_error: "Fine not found or already paid",
-    });
-    return NextResponse.json({ ok: true, unmatched: true });
+    await admin.from("sepay_webhook_events").upsert(
+      {
+        ...eventBase,
+        organization_id: organizationId,
+        reconciliation_status: "unmatched",
+        processing_error: "Fine not found or already paid",
+      },
+      { onConflict: "sepay_transaction_id" },
+    );
+    return ok({ unmatched: true });
   }
 
-  // Check amount matches (allow small rounding difference for transfer fees)
-  const amountMatch = Math.abs(transferAmount - fine.amount_vnd) <= 1000; // Allow 1000 VND diff
-
+  // Check amount matches (allow small rounding difference for transfer fees).
+  const amountMatch = Math.abs(tx.transferAmount - fine.amount_vnd) <= 1000;
   const reconciliationStatus = amountMatch ? "matched" : "unmatched";
-  const processingError = amountMatch ? null : `Amount mismatch: expected ${fine.amount_vnd}, got ${transferAmount}`;
+  const processingError = amountMatch ? null : `Amount mismatch: expected ${fine.amount_vnd}, got ${tx.transferAmount}`;
 
-  // Upsert webhook event (idempotent via unique sepay_transaction_id)
+  // Inbox-first: upsert webhook event (idempotent via unique sepay_transaction_id).
   const { error: webhookError } = await admin.from("sepay_webhook_events").upsert(
     {
-      sepay_transaction_id: sepayTransactionId,
-      gateway,
-      account_number: accountNumber,
-      transfer_type: transferType,
-      transfer_amount: transferAmount,
-      transaction_at: transactionAt ? new Date(transactionAt).toISOString() : null,
-      content,
-      reference_code: referenceCode,
-      raw_payload: payload,
+      ...eventBase,
+      organization_id: organizationId,
       reconciliation_status: reconciliationStatus,
       processing_error: processingError,
     },
-    { onConflict: "sepay_transaction_id" }
+    { onConflict: "sepay_transaction_id" },
   );
 
   if (webhookError) {
-    return NextResponse.json({ error: "Failed to log webhook" }, { status: 500 });
+    return fail(500, "Failed to log webhook");
   }
 
   if (!amountMatch) {
-    return NextResponse.json({ ok: true, unmatched: true, reason: "amount_mismatch" });
+    return ok({ unmatched: true, reason: "amount_mismatch" });
   }
 
-  // Amount matches - process payment in transaction
-  const now = new Date().toISOString();
-
-  // Use RPC for atomic fine payment + fund transaction + allocation
+  // Amount matches — process payment atomically via RPC.
   const { error: rpcError } = await admin.rpc("process_fine_payment", {
     p_fine_id: fine.id,
-    p_sepay_transaction_id: sepayTransactionId,
-    p_paid_at: now,
+    p_sepay_transaction_id: tx.sepayTransactionId,
+    p_paid_at: new Date().toISOString(),
   });
 
   if (rpcError) {
-    // If RPC doesn't exist yet, do manual transaction
-    // This will be created in a migration
-    return NextResponse.json({ error: "Payment processing not ready" }, { status: 500 });
+    // Flag the event so the mismatch between event (matched) and fine (unpaid)
+    // is visible for manual reconciliation instead of silently diverging.
+    // SePay will retry (non-success response); the retry is idempotent.
+    await admin
+      .from("sepay_webhook_events")
+      .update({ processing_error: `Payment failed: ${rpcError.message}` })
+      .eq("sepay_transaction_id", tx.sepayTransactionId);
+    return fail(500, "Payment processing failed");
   }
 
-  return NextResponse.json({ ok: true, paid: true, fine_code: fineCode });
+  return ok({ paid: true, fine_code: fineCode });
 }
 
 export async function GET() {

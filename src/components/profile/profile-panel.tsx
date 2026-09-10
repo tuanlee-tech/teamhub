@@ -68,7 +68,7 @@ export function ProfilePanel({
             <dt className="text-[var(--ink-soft)]">Vai trò</dt>
             <dd className="flex items-center gap-2 pt-1">
               <Stamp variant="muted">{role}</Stamp>
-              <Stamp variant="success">Hoạt động</Stamp>
+
             </dd>
           </div>
           <div className="rounded-xl border border-[var(--line)] bg-[var(--paper-deep)]/40 px-4 py-3">

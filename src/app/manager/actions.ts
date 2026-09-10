@@ -292,7 +292,9 @@ export async function updateTtsSettings(
     quietStart: formData.get("quietStart") ?? "00:00",
     quietEnd: formData.get("quietEnd") ?? "00:00",
     locale: formData.get("locale"),
-    preferredVoice: formData.get("preferredVoice"),
+    // Khi thiết bị không có voice, form gửi hidden input "" (hoặc thiếu field
+    // nếu browser cũ) — luôn fallback "" để không lỗi validation.
+    preferredVoice: formData.get("preferredVoice") ?? "",
     speechRate: formData.get("speechRate"),
     speechPitch: formData.get("speechPitch"),
   });

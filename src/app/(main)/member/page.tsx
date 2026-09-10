@@ -34,6 +34,39 @@ export default async function MemberHomePage() {
     .eq("attendance_days.work_date", workDate)
     .maybeSingle();
 
+  // Snapshot fine/payment thực tế (nguồn sự thật cho outstanding):
+  // outstandingVnd = originalVnd - allocatedVnd (contract §13), không dùng
+  // fine_amount_snapshot attendance để hiển thị số nợ.
+  const [{ data: fines }, { data: allocations }] = await Promise.all([
+    supabase
+      .from("fines")
+      .select("id, amount_vnd, status")
+      .eq("organization_id", orgId)
+      .eq("user_id", context.userId),
+    supabase.from("fine_allocations").select("fine_id, amount_vnd, fund_transactions(voided_at)"),
+  ]);
+
+  const allocationByFine = new Map<string, number>();
+  for (const row of allocations ?? []) {
+    const fund = row.fund_transactions as unknown;
+    const funds = Array.isArray(fund) ? fund : [fund];
+    const isEffective = funds.every(
+      (item) => item == null || (item as { voided_at: string | null }).voided_at == null,
+    );
+    if (!isEffective) continue;
+    allocationByFine.set(row.fine_id, (allocationByFine.get(row.fine_id) ?? 0) + row.amount_vnd);
+  }
+
+  const fineIds = (fines ?? []).map((fine) => fine.id);
+  let outstandingTotal = 0;
+  let unpaidCount = 0;
+  for (const fine of fines ?? []) {
+    const allocated = allocationByFine.get(fine.id) ?? 0;
+    const outstanding = Math.max(fine.amount_vnd - allocated, 0);
+    outstandingTotal += outstanding;
+    if (fine.status === "unpaid" && outstanding > 0) unpaidCount += 1;
+  }
+
   const officeConfigured =
     orgSettings?.office_latitude != null && orgSettings?.office_longitude != null;
 
@@ -67,6 +100,9 @@ export default async function MemberHomePage() {
         sessionStart={orgSettings?.session_start?.slice(0, 5) ?? null}
         sessionEnd={orgSettings?.session_end?.slice(0, 5) ?? null}
         validCheckInTime={orgSettings?.valid_check_in_time?.slice(0, 5) ?? "09:00"}
+        fineIds={fineIds}
+        outstandingVnd={outstandingTotal}
+        unpaidCount={unpaidCount}
       />
     </div>
   );

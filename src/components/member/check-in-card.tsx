@@ -2,12 +2,19 @@
 
 import { Clock, MapPin } from "lucide-react";
 import { useRouter } from "next/navigation";
-import { useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
-import { Stamp, useToast } from "@/components/ui";
+import { CurrencyText, Stamp, useToast } from "@/components/ui";
 import { formatNumber } from "@/lib/currency";
 import { formatTimeInTimezone } from "@/lib/domain/date";
-import { useOrganizationRealtime } from "@/lib/realtime/organization-events";
+import {
+  useOrganizationRealtime,
+  type AttendanceStatusEvent,
+  type CheckInStatusEvent,
+  type FineAllocationStatusEvent,
+  type FineStatusEvent,
+  type FundStatusEvent,
+} from "@/lib/realtime/organization-events";
 import { createClient } from "@/lib/supabase/client";
 
 type CheckInUiState = "idle" | "locating" | "confirming" | "success" | "error";
@@ -30,6 +37,54 @@ const stateMeta: Record<string, { label: string; variant: "success" | "error" | 
   excused: { label: "Được miễn", variant: "info" },
 };
 
+/** Coalesce nhiều event cùng transaction thành một lần refresh. */
+export const MEMBER_REFRESH_COALESCE_MS = 250;
+
+type AllocationScopeFields = {
+  user_id?: string | null;
+  fine_id?: string | null;
+  old_user_id?: string | null;
+  old_fine_id?: string | null;
+};
+
+type FundScopeFields = {
+  related_fine_ids?: string[] | null;
+};
+
+export function isMemberCheckInRelevant(event: Pick<CheckInStatusEvent, "user_id">, userId: string): boolean {
+  return event.user_id === userId;
+}
+
+export function isMemberAttendanceRelevant(event: Pick<AttendanceStatusEvent, "user_id">, userId: string): boolean {
+  return event.user_id === userId;
+}
+
+export function isMemberFineRelevant(event: Pick<FineStatusEvent, "user_id">, userId: string): boolean {
+  return event.user_id === userId;
+}
+
+export function isMemberAllocationRelevant(
+  event: AllocationScopeFields,
+  userId: string,
+  fineIds: readonly string[] = [],
+): boolean {
+  if (event.user_id === userId || event.old_user_id === userId) return true;
+  if (fineIds.length === 0) return false;
+  const known = new Set(fineIds);
+  if (event.fine_id != null && known.has(event.fine_id)) return true;
+  if (event.old_fine_id != null && known.has(event.old_fine_id)) return true;
+  return false;
+}
+
+export function isMemberFundRelevant(event: FundScopeFields, fineIds: readonly string[] = []): boolean {
+  // Contract §7.1: fund event không có user/date trực tiếp — chỉ invalidate
+  // các fine trong related_fine_ids, không refresh mọi member.
+  const related = event.related_fine_ids;
+  if (!related || related.length === 0 || fineIds.length === 0) return false;
+  const known = new Set(fineIds);
+  return related.some((fineId) => known.has(fineId));
+}
+
 export function CheckInCard({
   organizationId,
   userId,
@@ -44,6 +99,9 @@ export function CheckInCard({
   sessionStart,
   sessionEnd,
   validCheckInTime,
+  fineIds = [],
+  outstandingVnd = null,
+  unpaidCount = null,
   }: {
   organizationId: string;
   userId: string;
@@ -58,6 +116,11 @@ export function CheckInCard({
   sessionStart: string | null;
   sessionEnd: string | null;
   validCheckInTime: string;
+  /** Fine IDs của user hiện tại (snapshot server) — dùng để lọc allocation/fund. */
+  fineIds?: string[];
+  /** Tổng còn nợ thực tế = SUM(amount - allocated), nguồn sự thật là snapshot server. */
+  outstandingVnd?: number | null;
+  unpaidCount?: number | null;
 }) {
   const router = useRouter();
   const { error: toastError, success: toastSuccess } = useToast();
@@ -69,12 +132,58 @@ export function CheckInCard({
 
   const supabase = createClient();
 
-  useOrganizationRealtime(organizationId, {
-    onCheckIn: (event) => {
-      if (event.user_id === userId) router.refresh();
+  const refreshTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const fineIdsRef = useRef(fineIds);
+
+  useEffect(() => {
+    fineIdsRef.current = fineIds;
+  }, [fineIds]);
+
+  const scheduleRefresh = useCallback(() => {
+    // Coalesce event dồn cùng transaction (fine + allocation + fund) thành 1 refresh.
+    // router.refresh() giữ nguyên tab/search params.
+    if (refreshTimer.current) return;
+    refreshTimer.current = setTimeout(() => {
+      refreshTimer.current = null;
+      router.refresh();
+    }, MEMBER_REFRESH_COALESCE_MS);
+  }, [router]);
+
+  useEffect(
+    () => () => {
+      if (refreshTimer.current) clearTimeout(refreshTimer.current);
     },
-    onFine: () => router.refresh(),
-  });
+    [],
+  );
+
+  useOrganizationRealtime(
+    organizationId,
+    {
+      onCheckIn: (event) => {
+        if (isMemberCheckInRelevant(event, userId)) scheduleRefresh();
+      },
+      onAttendance: (event) => {
+        if (isMemberAttendanceRelevant(event, userId)) scheduleRefresh();
+      },
+      onFine: (event) => {
+        if (isMemberFineRelevant(event, userId)) scheduleRefresh();
+      },
+      onFineAllocation: (event: FineAllocationStatusEvent) => {
+        // Payload flat theo contract có thêm user_id/old_*; type hook có thể thiếu
+        // nên đọc defensively qua unknown cast.
+        const scope = event as unknown as AllocationScopeFields;
+        if (isMemberAllocationRelevant(scope, userId, fineIdsRef.current)) scheduleRefresh();
+      },
+      onFund: (event: FundStatusEvent) => {
+        const scope = event as unknown as FundScopeFields;
+        if (isMemberFundRelevant(scope, fineIdsRef.current)) scheduleRefresh();
+      },
+    },
+    {
+      // Recovery sau reconnect: fetch lại snapshot server, không phát toast/TTS lịch sử.
+      onSnapshotReady: () => router.refresh(),
+    },
+  );
 
   async function handleGpsCheckIn() {
     if (uiState === "locating" || uiState === "confirming") return;
@@ -162,7 +271,7 @@ export function CheckInCard({
           ) : null}
           {fineAmount > 0 ? (
             <div>
-              <dt className="text-[var(--ink-soft)]">Phạt</dt>
+              <dt className="text-[var(--ink-soft)]">Phạt (snapshot điểm danh)</dt>
               <dd className="font-bold text-[var(--signal)]">{formatNumber(fineAmount)} VNĐ</dd>
             </div>
           ) : null}
@@ -218,6 +327,17 @@ export function CheckInCard({
           ) : null}
         </div>
       )}
+      {outstandingVnd != null ? (
+        <div className="rounded-xl border border-[var(--line)] bg-[var(--paper-deep)]/50 px-4 py-3 text-sm">
+          <p className="text-[var(--ink-soft)]">
+            Còn nợ thực tế (server)
+            {unpaidCount != null ? ` · ${unpaidCount} phiếu chưa trả` : ""}
+          </p>
+          <p className="mt-1 font-bold">
+            <CurrencyText amount={outstandingVnd} className="text-base" />
+          </p>
+        </div>
+      ) : null}
     </section>
   );
 }

@@ -274,7 +274,7 @@ Quy tắc:
 
 ### 5.10. SePay và đối soát thủ công
 
-- [ ] Lưu giao dịch hợp lệ vào inbox trước khi xử lý nghiệp vụ; xác thực webhook HMAC theo hợp đồng tích hợp (sha256= trên `{timestamp}.{raw}` và kiểm tra `X-SePay-Timestamp`).
+- [x] Lưu giao dịch hợp lệ vào inbox trước khi xử lý nghiệp vụ; xác thực webhook HMAC theo hợp đồng tích hợp (sha256= trên `{timestamp}.{raw}` và kiểm tra `X-SePay-Timestamp`).
 - [ ] Gắn đúng tổ chức qua mapping tài khoản ngân hàng rõ ràng; sự kiện chưa xác định tổ chức không hiện cho manager bất kỳ; backfill chỉ khi có bằng chứng an toàn.
 - [ ] Ghi sổ số tiền **thực nhận**; không làm mất chênh lệch so với tiền phiếu (chuyển thiếu giữ phần dư nợ, chuyển thừa giữ tiền chưa phân bổ cho manager xử lý).
 - [ ] Chống xử lý lặp theo giao dịch nhà cung cấp; retry trả kết quả nhất quán; đồng bộ trạng thái sự kiện/giao dịch/phân bổ/phiếu trong một transaction.

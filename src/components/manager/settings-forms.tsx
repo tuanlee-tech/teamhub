@@ -1,6 +1,6 @@
 "use client";
 
-import { useActionState, useEffect, useState } from "react";
+import { useActionState, useEffect, useRef, useState } from "react";
 import { useFormStatus } from "react-dom";
 
 import {
@@ -10,6 +10,7 @@ import {
   type ManagerActionState,
 } from "@/app/manager/actions";
 import { SEPAY_BANKS } from "@/lib/banks";
+import { createTtsEngine, normalizeTtsConfig, type TtsEngine, type TtsPersonality } from "@/lib/tts";
 import { Toggle, useToast, useToastFeedback } from "@/components/ui";
 
 const initialState: ManagerActionState = {};
@@ -291,12 +292,15 @@ export type TtsSettingsValues = {
 export function TtsSettingsForm({ values }: { values: TtsSettingsValues }) {
   const [state, action] = useActionState(updateTtsSettings, initialState);
   useToastFeedback(state);
+  const { error } = useToast();
   const [quietEnabled, setQuietEnabled] = useState(values.quietEnabled);
   const [speechRate, setSpeechRate] = useState(values.speechRate);
   const [speechPitch, setSpeechPitch] = useState(values.speechPitch);
   const [availableVoices, setAvailableVoices] = useState<SpeechSynthesisVoice[]>([]);
   const [voicesLoaded, setVoicesLoaded] = useState(false);
   const [hasMounted, setHasMounted] = useState(false);
+  const formRef = useRef<HTMLFormElement>(null);
+  const engineRef = useRef<TtsEngine | null>(null);
   const events = [
     ["late", "Người đi trễ"],
     ["payment", "Đóng phạt thành công"],
@@ -329,20 +333,65 @@ export function TtsSettingsForm({ values }: { values: TtsSettingsValues }) {
     loadVoices();
     if (typeof window !== "undefined" && "speechSynthesis" in window) {
       window.speechSynthesis.addEventListener("voiceschanged", loadVoices);
-      // Some browsers need a kick
-      const voiceTimer = window.setTimeout(loadVoices, 500);
+      // Một số browser không bao giờ fire voiceschanged hoặc getVoices() rỗng
+      // (chưa cấp quyền, headless). Dừng loading sau timeout để không kẹt UI
+      // và form vẫn lưu được (nhánh fallback gửi preferredVoice="").
+      const voiceTimer = window.setTimeout(() => {
+        loadVoices();
+        setVoicesLoaded(true);
+      }, 2500);
       return () => {
         window.clearTimeout(voiceTimer);
         window.speechSynthesis.removeEventListener("voiceschanged", loadVoices);
       };
     }
+    // Không có Speech API: đánh dấu loaded để render nhánh fallback
+    // thay vì loading vô hạn.
+    setVoicesLoaded(true);
   }, []);
+
+  useEffect(() => {
+    return () => {
+      engineRef.current?.destroy();
+      engineRef.current = null;
+    };
+  }, []);
+
+  const handleTestVoice = () => {
+    if (typeof window === "undefined" || !("speechSynthesis" in window)) {
+      error("Trình duyệt không hỗ trợ đọc TTS.");
+      return;
+    }
+    const data = formRef.current ? new FormData(formRef.current) : null;
+    // Nghe thử dùng cùng engine: bypass quiet/cooldown/dedup/queue,
+    // nhưng áp dụng voice/rate/pitch hiện tại trên form.
+    const localeValue = data?.get("locale");
+    const personalityValue = data?.get("personality");
+    const config = normalizeTtsConfig({
+      personality:
+        typeof personalityValue === "string" && personalityValue
+          ? (personalityValue as TtsPersonality)
+          : (values.personality as TtsPersonality),
+      enabledEvents: ["on_time", "late", "payment", "achievement", "fund_balance"],
+      cooldownSeconds: 0,
+      quietEnabled: false,
+      quietStart: "00:00",
+      quietEnd: "00:00",
+      locale: typeof localeValue === "string" && localeValue ? localeValue : values.locale,
+      preferredVoice: String(data?.get("preferredVoice") ?? ""),
+      speechRate: Number(data?.get("speechRate") ?? speechRate),
+      speechPitch: Number(data?.get("speechPitch") ?? speechPitch),
+    });
+    if (!engineRef.current) engineRef.current = createTtsEngine();
+    engineRef.current.updateConfig(config, Intl.DateTimeFormat().resolvedOptions().timeZone);
+    engineRef.current.speakTest("Xin chào, đây là giọng MC.");
+  };
 
   const viVoices = availableVoices.filter((v) => v.lang.toLowerCase().startsWith("vi"));
   const otherVoices = availableVoices.filter((v) => !v.lang.toLowerCase().startsWith("vi"));
 
   return (
-    <form action={action} className="paper-panel space-y-6 p-6 sm:p-8">
+    <form action={action} className="paper-panel space-y-6 p-6 sm:p-8" ref={formRef}>
       <div>
         <p className="text-xs font-black tracking-[0.16em] text-[var(--signal)] uppercase">03 / Âm thanh</p>
         <h2 className="display-type mt-2 text-3xl">Giọng MC</h2>
@@ -418,8 +467,10 @@ export function TtsSettingsForm({ values }: { values: TtsSettingsValues }) {
           Giọng đọc ưu tiên
           {!hasMounted ? (
             <>
-              <select className={`${inputClassName} bg-[var(--paper-deep)]`} disabled name="preferredVoice">
-                <option>Đang tải danh sách giọng...</option>
+              {/* Select disabled không được submit — giữ giá trị đã lưu qua hidden input. */}
+              <input name="preferredVoice" type="hidden" value={values.preferredVoice} />
+              <select className={`${inputClassName} bg-[var(--paper-deep)]`} defaultValue="" disabled>
+                <option value="">Đang tải danh sách giọng...</option>
               </select>
               <span className="mt-1 block text-xs font-normal text-[var(--ink-soft)]">Đang quét giọng có thật trên thiết bị này...</span>
             </>
@@ -431,8 +482,9 @@ export function TtsSettingsForm({ values }: { values: TtsSettingsValues }) {
             </>
           ) : !voicesLoaded ? (
             <>
-              <select className={`${inputClassName} bg-[var(--paper-deep)]`} disabled name="preferredVoice">
-                <option>Đang tải danh sách giọng...</option>
+              <input name="preferredVoice" type="hidden" value={values.preferredVoice} />
+              <select className={`${inputClassName} bg-[var(--paper-deep)]`} defaultValue="" disabled>
+                <option value="">Đang tải danh sách giọng...</option>
               </select>
               <span className="mt-1 block text-xs font-normal text-[var(--ink-soft)]">Đang quét giọng có thật trên thiết bị này...</span>
             </>
@@ -510,6 +562,19 @@ export function TtsSettingsForm({ values }: { values: TtsSettingsValues }) {
           />
           <span className="mt-2 flex justify-between text-xs font-normal text-[var(--ink-soft)]"><span>Trầm</span><span>Cao</span></span>
         </label>
+      </div>
+      <div className="flex flex-col gap-3">
+        <button
+          className="inline-flex h-12 items-center justify-center gap-2 rounded-xl border border-[var(--line)] bg-[var(--white)] px-4 text-sm font-bold transition hover:border-[var(--signal)]"
+          onClick={handleTestVoice}
+          type="button"
+        >
+          <span aria-hidden>🔊</span>
+          Nghe thử giọng MC
+        </button>
+        <p className="-mt-1 text-xs leading-relaxed text-[var(--ink-soft)]">
+          Phát ngay câu mẫu với giọng/tốc độ/cao độ đang chọn, không bị quiet hours hay cooldown chặn.
+        </p>
       </div>
       <SaveButton />
     </form>

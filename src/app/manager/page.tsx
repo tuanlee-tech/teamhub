@@ -17,7 +17,7 @@ export default async function ManagerPage() {
   return (
     <ModuleShell
       description="Mọi thay đổi luật sẽ được snapshot theo ngày làm việc để không làm sai lịch sử điểm danh và khoản phạt đã phát sinh."
-      eyebrow="Quản lý"
+      eyebrow=""
       title="Bàn điều khiển"
     >
       <div className="mb-4 flex justify-end">

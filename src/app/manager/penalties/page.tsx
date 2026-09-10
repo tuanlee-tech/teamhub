@@ -40,7 +40,7 @@ export default async function PenaltiesPage() {
   return (
     <ModuleShell
       description="Một lần trễ chỉ áp dụng khung cao nhất đã vượt qua, không cộng dồn các khung thấp hơn."
-      eyebrow="Khung phạt"
+      eyebrow=""
       title="Trễ hơn, phạt nặng hơn"
     >
       <div className="space-y-5">

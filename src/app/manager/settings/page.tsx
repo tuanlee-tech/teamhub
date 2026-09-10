@@ -36,7 +36,7 @@ export default async function ManagerSettingsPage() {
   return (
     <ModuleShell
       description="Cấu hình mới áp dụng cho ngày làm việc được tạo sau đó. Ngày đã tạo sẽ giữ snapshot cũ."
-      eyebrow="Cấu hình"
+      eyebrow=""
       title="Luật của văn phòng"
     >
       <div className="space-y-4">
