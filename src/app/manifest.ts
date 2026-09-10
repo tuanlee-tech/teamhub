@@ -5,12 +5,16 @@ export default function manifest(): MetadataRoute.Manifest {
     name: "TeamHub",
     short_name: "TeamHub",
     description: "Smart Attendance, Automated Fines & Team Culture",
+    id: "/",
     start_url: "/",
+    scope: "/",
     display: "standalone",
     background_color: "#0d1117",
     theme_color: "#0d1117",
     lang: "vi",
     orientation: "any",
+    categories: ["business", "productivity"],
+    prefer_related_applications: false,
     icons: [
       {
         src: "/icon-192.png",

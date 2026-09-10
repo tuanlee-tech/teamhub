@@ -3,6 +3,7 @@ import { Archivo_Narrow } from "next/font/google";
 
 import { OnlineStatus } from "@/components/online-status";
 import { PerformancePatch } from "@/components/performance-patch";
+import { GlobalPwaInstallPrompt } from "@/components/profile/pwa-install";
 import { PwaRegister } from "@/components/pwa-register";
 import { PullToRefresh } from "@/components/pull-to-refresh";
 import { ToastProvider } from "@/components/ui";
@@ -48,6 +49,10 @@ export const metadata: Metadata = {
 export const viewport: Viewport = {
   themeColor: "#0d1117",
   colorScheme: "dark",
+  width: "device-width",
+  initialScale: 1,
+  maximumScale: 1,
+  userScalable: false,
 };
 
 export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {
@@ -58,7 +63,10 @@ export default function RootLayout({ children }: Readonly<{ children: React.Reac
         <PwaRegister />
         <PullToRefresh />
         <OnlineStatus />
-        <ToastProvider>{children}</ToastProvider>
+        <ToastProvider>
+          {children}
+          <GlobalPwaInstallPrompt />
+        </ToastProvider>
       </body>
     </html>
   );

@@ -30,6 +30,23 @@ export function PwaRegister() {
       scope: "/",
       updateViaCache: "none",
     });
+
+    // Capture install prompt globally (it fires once per page load, possibly
+    // before /profile mounts). Stash it and notify listeners.
+    const onInstallPrompt = (event: Event) => {
+      event.preventDefault();
+      (window as Window & { __teamhubInstallPrompt?: Event }).__teamhubInstallPrompt = event;
+      window.dispatchEvent(new CustomEvent("teamhub:install-available"));
+    };
+    const onInstalled = () => {
+      delete (window as Window & { __teamhubInstallPrompt?: Event }).__teamhubInstallPrompt;
+    };
+    window.addEventListener("beforeinstallprompt", onInstallPrompt);
+    window.addEventListener("appinstalled", onInstalled);
+    return () => {
+      window.removeEventListener("beforeinstallprompt", onInstallPrompt);
+      window.removeEventListener("appinstalled", onInstalled);
+    };
   }, []);
 
   return null;
