@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { normalizeTransferText } from "@/lib/domain/payment";
+import { buildPushPayload } from "@/lib/push/messages";
 import {
   extractFineCode,
   isFreshSePayTimestamp,
@@ -198,6 +199,15 @@ export async function POST(request: NextRequest) {
       .eq("sepay_transaction_id", tx.sepayTransactionId);
     return fail(500, "Payment processing failed");
   }
+
+  // Queue a push notification for the fine owner (sender drains the outbox).
+  const pushPayload = buildPushPayload("payment", { fineCode: fine.code, amountVnd: fine.amount_vnd });
+  await admin.from("notification_outbox").insert({
+    organization_id: fine.organization_id,
+    target_user_id: fine.user_id,
+    event_type: "payment",
+    payload: pushPayload,
+  });
 
   return ok({ paid: true, fine_code: fineCode });
 }

@@ -5,6 +5,7 @@ import Link from "next/link";
 
 import { signOut } from "@/app/(auth)/actions";
 import { Stamp } from "@/components/ui";
+import { PushToggle } from "@/components/profile/push-toggle";
 
 function initials(name: string) {
   return name
@@ -83,6 +84,8 @@ export function ProfilePanel({
           </div>
         </dl>
       </section>
+
+      <PushToggle />
 
       {isManager ? (
         <Link
