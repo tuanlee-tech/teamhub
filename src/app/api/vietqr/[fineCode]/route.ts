@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { createClient } from "@/lib/supabase/server";
-import { buildTransferDescription, normalizeTransferText } from "@/lib/domain/payment";
+import { buildTransferDescription, buildVietQrImageUrl, normalizeTransferText } from "@/lib/domain/payment";
 
 function toAscii(str: string): string {
   return str
@@ -114,18 +114,32 @@ export async function GET(
   });
 
   // Build VietQR URL for the outstanding amount of this order.
-  const usp = new URLSearchParams();
-  usp.set("acc", settings.bank_account_number);
-  usp.set("bank", settings.bank_code);
-  usp.set("amount", String(outstandingVnd));
-  usp.set("des", des);
-  usp.set("template", settings.vietqr_template ?? "compact");
-  usp.set("showinfo", settings.vietqr_show_info ? "true" : "false");
-  usp.set("fullacc", settings.vietqr_full_account ? "true" : "false");
-  usp.set("holder", settings.bank_account_holder);
-  usp.set("store", settings.fund_display_name ?? "TeamHub");
+  const vietQrUrl = buildVietQrImageUrl({
+    accountNumber: settings.bank_account_number,
+    bank: settings.bank_code,
+    amountVnd: outstandingVnd,
+    description: des,
+    template: settings.vietqr_template ?? "compact",
+    showInfo: settings.vietqr_show_info ?? true,
+    fullAccount: settings.vietqr_full_account ?? true,
+    holder: settings.bank_account_holder,
+    store: settings.fund_display_name ?? "TeamHub",
+    download: request.nextUrl.searchParams.get("download") === "true",
+  });
 
-  const vietQrUrl = `https://vietqr.app/img?${usp.toString()}`;
+  if (request.nextUrl.searchParams.get("proxy") === "true") {
+    const image = await fetch(vietQrUrl, { cache: "no-store" });
+    if (!image.ok) {
+      return NextResponse.json({ error: "VietQR image unavailable" }, { status: 502 });
+    }
+    return new NextResponse(image.body, {
+      status: 200,
+      headers: {
+        "Content-Type": image.headers.get("content-type") ?? "image/png",
+        "Cache-Control": "no-store",
+      },
+    });
+  }
 
   // Redirect to VietQR image. no-store để QR cũ theo outstanding cũ không bị
   // browser/CDN giữ lại sau khi allocation/payment đổi số tiền.

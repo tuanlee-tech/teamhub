@@ -14,6 +14,7 @@ import {
   Stamp,
 } from "@/components/ui";
 import { SegmentedTabs } from "@/components/ui/segmented-tabs";
+import { useRefreshOnForeground } from "@/lib/client/use-refresh-on-foreground";
 import { formatTimeInTimezone } from "@/lib/domain/date";
 import type { PaymentBank } from "@/lib/domain/payment";
 import { useOrganizationRealtime } from "@/lib/realtime/organization-events";
@@ -287,6 +288,13 @@ export function LateList({
   const displayed = tab === "paid" ? paid : [...unpaid, ...pendingFine];
   // Tra row mới nhất theo selected fine id để payment/waive/allocation cập nhật badge và modal ngay.
   const selectedRow = findLateRowByFineId(liveRows, selectedFineId);
+
+  useRefreshOnForeground(
+    selectedFineId !== null && selectedRow?.fine_status === "unpaid" && (selectedRow.outstanding_vnd ?? 0) > 0,
+    () => {
+      reloadNow().catch(() => {});
+    },
+  );
 
   return (
     <div className="space-y-5">

@@ -174,6 +174,7 @@ export function AttendanceSettingsForm({ values }: { values: AttendanceSettingsV
 
 export type BankSettingsValues = {
   bankCode: string;
+  bankShortName: string;
   bankAccountNumber: string;
   bankAccountHolder: string;
   transferDescriptionRule: string;
@@ -187,6 +188,7 @@ export function BankSettingsForm({ values }: { values: BankSettingsValues }) {
   const [state, action] = useActionState(updateBankSettings, initialState);
   useToastFeedback(state);
   const [bankCode, setBankCode] = useState(values.bankCode);
+  const [bankShortName, setBankShortName] = useState(values.bankShortName);
   const [bankAccountNumber, setBankAccountNumber] = useState(values.bankAccountNumber);
   const [bankAccountHolder, setBankAccountHolder] = useState(values.bankAccountHolder);
   const [transferDescriptionRule, setTransferDescriptionRule] = useState(values.transferDescriptionRule);
@@ -217,10 +219,14 @@ export function BankSettingsForm({ values }: { values: BankSettingsValues }) {
       <div className="grid gap-4 sm:grid-cols-2">
         <label className="text-sm font-bold sm:col-span-2">
           Ngân hàng
-          <select className={inputClassName} name="bankCode" onChange={(event) => { setPreviewLoaded(false); setBankCode(event.target.value); }} value={bankCode}>
+          <select className={inputClassName} name="bankCode" onChange={(event) => { const next = event.target.value; setPreviewLoaded(false); setBankCode(next); setBankShortName(SEPAY_BANKS.find((bank) => bank.code === next)?.shortName ?? ""); }} value={bankCode}>
             <option value="">Chưa cấu hình</option>
-            {SEPAY_BANKS.map((bank) => <option key={bank.code} value={bank.code}>{bank.name}</option>)}
+            {SEPAY_BANKS.map((bank) => <option key={bank.code} value={bank.code}>{bank.shortName} · {bank.name}</option>)}
           </select>
+        </label>
+        <label className="text-sm font-bold">
+          Tên ngân hàng hiển thị
+          <input className={inputClassName} name="bankShortName" onChange={(event) => setBankShortName(event.target.value)} placeholder="VD: VietinBank" value={bankShortName} />
         </label>
         <label className="text-sm font-bold">
           Số tài khoản

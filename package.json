@@ -13,7 +13,8 @@
     "test:watch": "vitest",
     "db:reset": "supabase db reset",
     "db:seed": "npx tsx supabase/seed-members.ts",
-    "db:clear-checkin": "npx tsx supabase/clear-checkin.ts"
+    "db:clear-checkin": "npx tsx supabase/clear-checkin.ts",
+    "db:clear-data": "npx tsx supabase/clear-operational-data.ts"
   },
   "dependencies": {
     "@hookform/resolvers": "^5.2.2",

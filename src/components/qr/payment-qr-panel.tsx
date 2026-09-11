@@ -4,7 +4,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { Check, Copy, Download, Share, ShieldCheck } from "lucide-react";
 
 import { CurrencyText, SecondaryButton, Stamp, useToast } from "@/components/ui";
-import { buildTransferDescription, normalizeTransferText, type PaymentBank } from "@/lib/domain/payment";
+import { buildTransferDescription, buildVietQrImageUrl, normalizeTransferText, type PaymentBank } from "@/lib/domain/payment";
 
 type PaymentQrPanelProps = {
   fineCode: string;
@@ -32,6 +32,10 @@ export function isPaymentPaidOff(status: PaymentQrPanelProps["status"], outstand
  */
 export function buildPaymentQrSrc(fineCode: string, outstandingVnd: number): string {
   return `/api/vietqr/${encodeURIComponent(fineCode)}?amount=${Number.isFinite(outstandingVnd) ? Math.max(Math.trunc(outstandingVnd), 0) : 0}`;
+}
+
+function buildPaymentQrProxySrc(fineCode: string, outstandingVnd: number): string {
+  return `${buildPaymentQrSrc(fineCode, outstandingVnd)}&proxy=true`;
 }
 
 function toAscii(str: string): string {
@@ -82,7 +86,6 @@ export function PaymentQrPanel({
 
   const hasOutstanding = !isPaymentPaidOff(status, outstandingVnd);
   const paidOff = !hasOutstanding;
-  const qrSrc = buildPaymentQrSrc(fineCode, outstandingVnd);
   const description = bank
     ? buildTransferDescription({
         rule: normalizeTransferText(bank.transferDescriptionRule ?? ""),
@@ -90,6 +93,20 @@ export function PaymentQrPanel({
         displayName: toAscii(memberName),
       })
     : null;
+  const qrSrc = bank && description
+    ? buildVietQrImageUrl({
+        accountNumber: bank.accountNumber,
+        bank: bank.bankCode,
+        amountVnd: outstandingVnd,
+        description,
+        template: bank.vietqrTemplate,
+        showInfo: bank.vietqrShowInfo,
+        fullAccount: bank.vietqrFullAccount,
+        holder: bank.accountHolder,
+        store: bank.fundDisplayName,
+      })
+    : buildPaymentQrSrc(fineCode, outstandingVnd);
+  const qrProxySrc = buildPaymentQrProxySrc(fineCode, outstandingVnd);
 
   const copy = useCallback(
     async (key: string, value: string) => {
@@ -108,7 +125,7 @@ export function PaymentQrPanel({
 
   async function downloadQr() {
     try {
-      const response = await fetch(qrSrc);
+      const response = await fetch(qrProxySrc);
       if (!response.ok) {
         if (response.status === 409) {
           // Race: server đã hết nợ (payment/allocation mới) nhưng props parent
@@ -133,7 +150,7 @@ export function PaymentQrPanel({
   async function shareQr() {
     setSharing(true);
     try {
-      const response = await fetch(qrSrc);
+      const response = await fetch(qrProxySrc);
       if (response.status === 409) {
         toastError("Phiếu này vừa hết nợ. Số tiền mới đang được cập nhật.");
         return;
@@ -189,7 +206,7 @@ export function PaymentQrPanel({
             <div className="grid grid-cols-2 gap-x-4 gap-y-3 text-sm">
               <div>
                 <dt className="text-[var(--ink-soft)]">Ngân hàng</dt>
-                <dd className="font-bold">{bank.bankCode}</dd>
+                <dd className="font-bold">{bank.bankShortName || bank.bankCode}</dd>
               </div>
               <div>
                 <dt className="text-[var(--ink-soft)]">Chủ tài khoản</dt>

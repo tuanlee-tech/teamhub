@@ -12,7 +12,7 @@ export default async function KioskPage() {
     supabase
       .from("organization_settings")
       .select(
-        "timezone, bank_code, bank_account_number, bank_account_holder, transfer_description_rule, fund_display_name",
+        "timezone, bank_code, bank_short_name, bank_account_number, bank_account_holder, transfer_description_rule, fund_display_name, vietqr_template, vietqr_show_info, vietqr_full_account",
       )
       .eq("organization_id", orgId)
       .maybeSingle(),
@@ -34,10 +34,14 @@ export default async function KioskPage() {
       } | null}
       bank={settings ? {
         bankCode: settings.bank_code,
+        bankShortName: settings.bank_short_name ?? settings.bank_code ?? "",
         accountNumber: settings.bank_account_number,
         accountHolder: settings.bank_account_holder,
         transferDescriptionRule: settings.transfer_description_rule ?? "",
         fundDisplayName: settings.fund_display_name ?? "TeamHub",
+        vietqrTemplate: settings.vietqr_template ?? "compact",
+        vietqrShowInfo: settings.vietqr_show_info ?? true,
+        vietqrFullAccount: settings.vietqr_full_account ?? true,
       } : null}
     />
   );

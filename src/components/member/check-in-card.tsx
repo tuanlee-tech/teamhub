@@ -7,6 +7,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { CurrencyText, Stamp, useToast } from "@/components/ui";
 import { formatNumber } from "@/lib/currency";
 import { formatTimeInTimezone } from "@/lib/domain/date";
+import { flushPendingPush } from "@/lib/push/client";
 import {
   useOrganizationRealtime,
   type AttendanceStatusEvent,
@@ -215,6 +216,9 @@ export function CheckInCard({
                 ? `Đã xác nhận từ server. Trễ ${result.late_minutes} phút, phạt ${formatNumber(result.fine_amount_snapshot ?? 0)} VNĐ.`
                 : "Đã xác nhận từ server, đúng giờ.",
             );
+            if (isLate) {
+              void flushPendingPush();
+            }
             setUiState("success");
             router.refresh();
           } else {

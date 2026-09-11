@@ -8,6 +8,7 @@ import { Clock, QrCode } from "lucide-react";
 import { FormInput, FormLabel, PrimaryButton, useToast } from "@/components/ui";
 import { SegmentedTabs } from "@/components/ui/segmented-tabs";
 import { formatNumber } from "@/lib/currency";
+import { flushPendingPush } from "@/lib/push/client";
 import { createClient } from "@/lib/supabase/client";
 
 async function submitCheckIn(
@@ -92,6 +93,9 @@ export function QrHub({
         const result = await submitCheckIn(orgId, { mode: "qr", token: value.trim() });
         if (result?.ok) {
           success(resultText(result));
+          if (result.state === "late") {
+            void flushPendingPush();
+          }
           stopCamera();
           router.push("/member");
         } else {
@@ -234,6 +238,9 @@ export function QrHub({
       const result = await submitCheckIn(orgId, { mode: "otp", code: otp.trim() });
       if (result?.ok) {
         success(resultText(result));
+        if (result.state === "late") {
+          void flushPendingPush();
+        }
         router.push("/member");
       } else {
         error(resultText(result ?? { ok: false }));

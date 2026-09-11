@@ -27,7 +27,7 @@ export default async function FineDetailPage({
     supabase
       .from("organization_settings")
       .select(
-        "bank_code, bank_account_number, bank_account_holder, transfer_description_rule, fund_display_name, timezone",
+        "bank_code, bank_short_name, bank_account_number, bank_account_holder, transfer_description_rule, fund_display_name, timezone, vietqr_template, vietqr_show_info, vietqr_full_account",
       )
       .eq("organization_id", orgId)
       .maybeSingle(),

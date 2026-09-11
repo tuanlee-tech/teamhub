@@ -18,7 +18,7 @@ export default async function LatePage({
 
   const { data: settings } = await supabase
     .from("organization_settings")
-    .select("timezone, session_start, session_end, bank_code, bank_account_number, bank_account_holder, transfer_description_rule, fund_display_name")
+    .select("timezone, session_start, session_end, bank_code, bank_short_name, bank_account_number, bank_account_holder, transfer_description_rule, fund_display_name, vietqr_template, vietqr_show_info, vietqr_full_account")
     .eq("organization_id", orgId)
     .maybeSingle();
 

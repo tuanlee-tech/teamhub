@@ -75,6 +75,7 @@ export default async function ManagerSettingsPage() {
               <BankSettingsForm
                 values={{
                   bankCode: settings.bank_code ?? "",
+                  bankShortName: settings.bank_short_name ?? "",
                   bankAccountNumber: settings.bank_account_number ?? "",
                   bankAccountHolder: settings.bank_account_holder ?? "",
                   transferDescriptionRule: settings.transfer_description_rule ?? "",

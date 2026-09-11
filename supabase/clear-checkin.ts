@@ -84,9 +84,18 @@ async function main() {
     const attendanceDayIds = dayIds;
     const { data: recs } = await supabase
       .from("attendance_records")
-      .select("id")
+      .select("id, user_id")
       .in("attendance_day_id", attendanceDayIds);
     const recordIds = recs?.map((r) => r.id) ?? [];
+    const userIds = Array.from(new Set((recs ?? []).map((r) => r.user_id)));
+    const { data: fineRows, error: fineRowsError } = recordIds.length
+      ? await supabase
+          .from("fines")
+          .select("id, code")
+          .in("attendance_record_id", recordIds)
+      : { data: [], error: null };
+    if (fineRowsError) throw fineRowsError;
+    const fineIds = fineRows?.map((fine) => fine.id) ?? [];
 
     const countRec = await supabase
       .from("attendance_records")
@@ -100,11 +109,51 @@ async function main() {
       .from("daily_roster")
       .select("id", { count: "exact", head: true })
       .in("attendance_day_id", attendanceDayIds);
-    const countFines = recordIds.length
-      ? await supabase.from("fines").select("id", { count: "exact", head: true }).in("attendance_record_id", recordIds)
+    const countFines = { count: fineIds.length };
+    const countAllocations = fineIds.length
+      ? await supabase.from("fine_allocations").select("id", { count: "exact", head: true }).in("fine_id", fineIds)
+      : { count: 0 };
+    const { data: allocationRows, error: allocationRowsError } = fineIds.length
+      ? await supabase.from("fine_allocations").select("fund_transaction_id").in("fine_id", fineIds)
+      : { data: [], error: null };
+    if (allocationRowsError) throw allocationRowsError;
+    const fundTransactionIds = Array.from(new Set((allocationRows ?? []).map((row) => row.fund_transaction_id)));
+    const countFundAudits = fundTransactionIds.length
+      ? await supabase
+          .from("fund_entry_audits")
+          .select("id", { count: "exact", head: true })
+          .in("fund_transaction_id", fundTransactionIds)
+      : { count: 0 };
+    const countFundTransactions = { count: fundTransactionIds.length };
+    const { data: fundRows, error: fundRowsError } = fundTransactionIds.length
+      ? await supabase
+          .from("fund_transactions")
+          .select("sepay_event_id")
+          .in("id", fundTransactionIds)
+      : { data: [], error: null };
+    if (fundRowsError) throw fundRowsError;
+    const sepayEventIds = Array.from(
+      new Set((fundRows ?? []).map((row) => row.sepay_event_id).filter((id): id is number => id !== null)),
+    );
+    const countSepayEvents = sepayEventIds.length
+      ? await supabase.from("sepay_webhook_events").select("id", { count: "exact", head: true }).in("id", sepayEventIds)
+      : { count: 0 };
+    const countOutbox = userIds.length
+      ? await supabase
+          .from("notification_outbox")
+          .select("id", { count: "exact", head: true })
+          .eq("organization_id", org.organization_id)
+          .in("target_user_id", userIds)
+          .gte("created_at", `${workDate}T00:00:00+07:00`)
+          .lt("created_at", `${workDate}T23:59:59.999+07:00`)
       : { count: 0 };
 
     console.log("Sẽ xóa:");
+    console.log("  notification_outbox:", countOutbox.count ?? 0);
+    console.log("  fine_allocations:", countAllocations.count ?? 0);
+    console.log("  fund_entry_audits:", countFundAudits.count ?? 0);
+    console.log("  fund_transactions:", countFundTransactions.count ?? 0);
+    console.log("  sepay_webhook_events:", countSepayEvents.count ?? 0);
     console.log("  fines:", countFines.count ?? 0);
     console.log("  attendance_records:", countRec.count ?? 0);
     console.log("  check_in_attempts:", countAttempts.count ?? 0);
@@ -115,12 +164,35 @@ async function main() {
       continue;
     }
 
-    const recRowIds = (await supabase.from("attendance_records").select("id").in("attendance_day_id", attendanceDayIds)).data ?? [];
-    if (recRowIds.length > 0) {
+    if (userIds.length > 0) {
       const { error } = await supabase
-        .from("fines")
+        .from("notification_outbox")
         .delete()
-        .in("attendance_record_id", recRowIds.map((r) => r.id));
+        .eq("organization_id", org.organization_id)
+        .in("target_user_id", userIds)
+        .gte("created_at", `${workDate}T00:00:00+07:00`)
+        .lt("created_at", `${workDate}T23:59:59.999+07:00`);
+      if (error) throw new Error(`Xóa notification_outbox: ${error.message}`);
+    }
+    if (fineIds.length > 0) {
+      const { error } = await supabase.from("fine_allocations").delete().in("fine_id", fineIds);
+      if (error) throw new Error(`Xóa fine_allocations: ${error.message}`);
+    }
+    if (fundTransactionIds.length > 0) {
+      const { error: eAudit } = await supabase
+        .from("fund_entry_audits")
+        .delete()
+        .in("fund_transaction_id", fundTransactionIds);
+      if (eAudit) throw new Error(`Xóa fund_entry_audits: ${eAudit.message}`);
+      const { error: eFund } = await supabase.from("fund_transactions").delete().in("id", fundTransactionIds);
+      if (eFund) throw new Error(`Xóa fund_transactions: ${eFund.message}`);
+    }
+    if (sepayEventIds.length > 0) {
+      const { error } = await supabase.from("sepay_webhook_events").delete().in("id", sepayEventIds);
+      if (error) throw new Error(`Xóa sepay_webhook_events: ${error.message}`);
+    }
+    if (recordIds.length > 0) {
+      const { error } = await supabase.from("fines").delete().in("attendance_record_id", recordIds);
       if (error) throw new Error(`Xóa fines: ${error.message}`);
     }
     const { error: eRec } = await supabase.from("attendance_records").delete().in("attendance_day_id", attendanceDayIds);

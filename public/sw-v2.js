@@ -54,9 +54,12 @@ self.addEventListener("push", (event) => {
   event.waitUntil(
     self.registration.showNotification(title, {
       body: payload.body ?? "Bạn có thông báo mới.",
-      icon: "/icon.svg",
-      badge: "/icon.svg",
+      icon: "/icon-192.png",
+      badge: "/icon-192.png",
       data: { url: payload.url ?? "/" },
+      requireInteraction: true,
+      renotify: true,
+      vibrate: [120, 80, 120],
       tag: payload.tag,
     }),
   );

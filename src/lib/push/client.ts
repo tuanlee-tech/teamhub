@@ -35,41 +35,24 @@ async function getRegistration(): Promise<ServiceWorkerRegistration | null> {
   }
 }
 
-/** Current subscription state on this device. Null when unsupported. */
-export async function getPushState(): Promise<
-  | { supported: false }
-  | { supported: true; permission: NotificationPermission; subscribed: boolean }
-> {
-  if (!isPushSupported()) return { supported: false };
-  const registration = await getRegistration();
-  const subscription = (await registration?.pushManager.getSubscription()) ?? null;
-  return { supported: true, permission: Notification.permission, subscribed: subscription !== null };
-}
-
-export async function enablePush(): Promise<{ ok: true } | { ok: false; reason: string }> {
-  if (!isPushSupported()) return { ok: false, reason: "unsupported" };
+async function subscribe(registration: ServiceWorkerRegistration): Promise<PushSubscription> {
   const publicKey = getPublicKey();
-  if (!publicKey) return { ok: false, reason: "missing_key" };
-
-  const permission = await Notification.requestPermission();
-  if (permission !== "granted") return { ok: false, reason: "denied" };
-
-  const registration = await navigator.serviceWorker.ready;
-  const subscription = await registration.pushManager.subscribe({
+  if (!publicKey) throw new Error("missing_key");
+  return registration.pushManager.subscribe({
     userVisibleOnly: true,
     applicationServerKey: urlBase64ToUint8Array(publicKey),
   });
+}
+
+async function saveSubscription(subscription: PushSubscription): Promise<"ok" | "signed_out" | "bad_keys" | "save_failed"> {
   const keys = subscription.toJSON().keys;
-  if (!keys?.p256dh || !keys?.auth) return { ok: false, reason: "bad_keys" };
+  if (!keys?.p256dh || !keys?.auth) return "bad_keys";
 
   const supabase = createClient();
   const {
     data: { user },
   } = await supabase.auth.getUser();
-  if (!user) {
-    await subscription.unsubscribe();
-    return { ok: false, reason: "signed_out" };
-  }
+  if (!user) return "signed_out";
 
   const { error } = await supabase.from("push_subscriptions").upsert(
     {
@@ -82,10 +65,62 @@ export async function enablePush(): Promise<{ ok: true } | { ok: false; reason: 
     },
     { onConflict: "endpoint" },
   );
-  if (error) {
-    await subscription.unsubscribe();
-    return { ok: false, reason: "save_failed" };
+  return error ? "save_failed" : "ok";
+}
+
+async function syncSubscriptionToCurrentUser(registration: ServiceWorkerRegistration): Promise<boolean> {
+  let subscription = (await registration.pushManager.getSubscription()) ?? null;
+  if (!subscription) return false;
+
+  let saved = await saveSubscription(subscription);
+  if (saved === "ok") return true;
+
+  // Existing endpoint can belong to a previously logged-in account. RLS blocks
+  // reassigning that row, so rotate the browser subscription for this account.
+  if (saved === "save_failed" && getPublicKey()) {
+    await subscription.unsubscribe().catch(() => {});
+    subscription = await subscribe(registration);
+    saved = await saveSubscription(subscription);
+    return saved === "ok";
   }
+
+  return false;
+}
+
+/** Current subscription state on this device. Null when unsupported. */
+export async function getPushState(): Promise<
+  | { supported: false }
+  | { supported: true; permission: NotificationPermission; subscribed: boolean }
+> {
+  if (!isPushSupported()) return { supported: false };
+  const registration = await getRegistration();
+  const subscribed = registration ? await syncSubscriptionToCurrentUser(registration) : false;
+  return { supported: true, permission: Notification.permission, subscribed };
+}
+
+export async function enablePush(): Promise<{ ok: true } | { ok: false; reason: string }> {
+  if (!isPushSupported()) return { ok: false, reason: "unsupported" };
+  const publicKey = getPublicKey();
+  if (!publicKey) return { ok: false, reason: "missing_key" };
+
+  const permission = await Notification.requestPermission();
+  if (permission !== "granted") return { ok: false, reason: "denied" };
+
+  const registration = await navigator.serviceWorker.ready;
+  let subscription = (await registration.pushManager.getSubscription()) ?? (await subscribe(registration));
+  let saved = await saveSubscription(subscription);
+
+  if (saved === "save_failed") {
+    await subscription.unsubscribe().catch(() => {});
+    subscription = await subscribe(registration);
+    saved = await saveSubscription(subscription);
+  }
+
+  if (saved !== "ok") {
+    await subscription.unsubscribe().catch(() => {});
+    return { ok: false, reason: saved };
+  }
+
   return { ok: true };
 }
 
@@ -98,4 +133,9 @@ export async function disablePush(): Promise<void> {
     await supabase.from("push_subscriptions").update({ is_active: false }).eq("endpoint", subscription.endpoint);
     await subscription.unsubscribe().catch(() => {});
   }
+}
+
+export async function flushPendingPush(): Promise<void> {
+  if (typeof window === "undefined") return;
+  await fetch("/api/push/flush", { method: "POST" }).catch(() => {});
 }

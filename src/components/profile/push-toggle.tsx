@@ -126,6 +126,45 @@ export function PushToggle() {
     }
   }
 
+  async function testLocalNotification() {
+    try {
+      if (!("serviceWorker" in navigator) || !("Notification" in window)) {
+        error("Trình duyệt không hỗ trợ notification.");
+        return;
+      }
+      if (Notification.permission !== "granted") {
+        setStatus("Trình duyệt chưa được cấp quyền thông báo.");
+        error("Trình duyệt chưa được cấp quyền thông báo.");
+        return;
+      }
+      const registration = await navigator.serviceWorker.ready;
+      const options = {
+        body: "Nếu thấy thông báo này thì Android/browser cho phép hiển thị notification.",
+        icon: "/icon-192.png",
+        badge: "/icon-192.png",
+        data: { url: "/profile" },
+        requireInteraction: true,
+        renotify: true,
+        vibrate: [120, 80, 120],
+        tag: `local-test-${Date.now()}`,
+      } as NotificationOptions;
+      await registration.showNotification("TeamHub local test", options);
+      const notifications = await registration.getNotifications();
+      setStatus(`Local test đã tạo ${notifications.length} notification trong Chrome.`);
+      setDiagnostics(
+        await buildDiagnostics(
+          `local_test_created_${notifications.length}_notifications:${notifications.map((item) => item.title).join(",")}`,
+        ),
+      );
+      success("Đã gọi notification test trên thiết bị này.");
+    } catch (err) {
+      const message = err instanceof Error ? `${err.name}: ${err.message}` : String(err);
+      setStatus(`Lỗi local test: ${message}`);
+      setDiagnostics(await buildDiagnostics(message));
+      error(`Không hiện được notification test: ${message}`);
+    }
+  }
+
   return (
     <section className="paper-panel space-y-2 p-5 sm:p-6">
       <Toggle
@@ -137,6 +176,13 @@ export function PushToggle() {
       />
       <p className="px-1 text-xs text-[var(--ink-soft)]">{busy ? "Đang xử lý..." : status}</p>
       <div className="px-1">
+        <button
+          type="button"
+          onClick={testLocalNotification}
+          className="mr-4 text-xs font-bold text-[var(--signal)]"
+        >
+          Test trên máy này
+        </button>
         <button
           type="button"
           onClick={copyDiagnostics}

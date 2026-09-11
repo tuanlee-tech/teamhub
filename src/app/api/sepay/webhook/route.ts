@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { normalizeTransferText } from "@/lib/domain/payment";
+import { dispatchPushOutbox } from "@/lib/push/dispatch";
 import { buildPushPayload } from "@/lib/push/messages";
 import {
   extractFineCode,
@@ -10,7 +11,7 @@ import {
   verifySePaySignature,
 } from "@/lib/sepay/webhook";
 
-export const runtime = "edge";
+export const runtime = "nodejs";
 
 function getSecret() {
   return process.env.SEPAY_WEBHOOK_SECRET ?? process.env.TEAMHUB_SEPAY_SECRET;
@@ -202,14 +203,25 @@ export async function POST(request: NextRequest) {
 
   // Queue a push notification for the fine owner (sender drains the outbox).
   const pushPayload = buildPushPayload("payment", { fineCode: fine.code, amountVnd: fine.amount_vnd });
-  await admin.from("notification_outbox").insert({
-    organization_id: fine.organization_id,
-    target_user_id: fine.user_id,
-    event_type: "payment",
-    payload: pushPayload,
-  });
+  const { data: outboxRow, error: outboxError } = await admin
+    .from("notification_outbox")
+    .insert({
+      organization_id: fine.organization_id,
+      target_user_id: fine.user_id,
+      event_type: "payment",
+      payload: pushPayload,
+    })
+    .select("id")
+    .single();
+  if (outboxError) {
+    return fail(500, "Failed to queue push notification");
+  }
 
-  return ok({ paid: true, fine_code: fineCode });
+  // Best-effort immediate delivery for payment UX. The outbox row remains the
+  // source of truth, so cron/worker dispatch can retry if this send fails.
+  const pushDispatch = await dispatchPushOutbox(admin, 5, [outboxRow.id]);
+
+  return ok({ paid: true, fine_code: fineCode, push_dispatch: pushDispatch });
 }
 
 export async function GET() {

@@ -61,6 +61,7 @@ create table public.organization_settings (
   office_radius_m integer not null default 100 check (office_radius_m between 10 and 5000),
   max_gps_accuracy_m integer not null default 100 check (max_gps_accuracy_m between 10 and 1000),
   bank_code text check (bank_code in ('VCB', 'STB', 'TPB', 'VPB', 'ICB', 'ACB', 'BIDV', 'MB', 'OCB', 'KLB', 'MSB')),
+  bank_short_name text check (char_length(bank_short_name) <= 40),
   bank_account_number text check (bank_account_number ~ '^[A-Za-z0-9]{1,19}$'),
   bank_account_holder text,
   transfer_description_rule text check (transfer_description_rule ~ '^[A-Za-z0-9 ]+$'),

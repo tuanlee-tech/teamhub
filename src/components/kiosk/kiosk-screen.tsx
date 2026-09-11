@@ -9,6 +9,7 @@ import { signOut } from "@/app/(auth)/actions";
 import { PaymentQrPanel } from "@/components/qr/payment-qr-panel";
 import { CurrencyText, Logo, Modal, SecondaryButton, Stamp, Toggle, useToast } from "@/components/ui";
 import { SegmentedTabs } from "@/components/ui/segmented-tabs";
+import { useRefreshOnForeground } from "@/lib/client/use-refresh-on-foreground";
 import { formatTimeInTimezone } from "@/lib/domain/date";
 import type { PaymentBank } from "@/lib/domain/payment";
 import { useOrganizationRealtime } from "@/lib/realtime/organization-events";
@@ -1017,6 +1018,13 @@ export function KioskScreen({
   const lateDisplayed = lateTab === "paid" ? latePaid : [...lateUnpaid, ...latePending];
   // Tra row mới nhất theo selected fine id để payment/waive/allocation cập nhật modal ngay.
   const selectedRow = selectedFineId ? (lateRows.find((row) => row.fine_id === selectedFineId) ?? null) : null;
+
+  useRefreshOnForeground(
+    selectedFineId !== null && selectedRow?.fine_status === "unpaid" && (selectedRow.outstanding_vnd ?? 0) > 0,
+    () => {
+      loadLate(lateDateRef.current).catch(() => {});
+    },
+  );
 
   return (
     <div className="flex min-h-dvh flex-col bg-[var(--paper)]">

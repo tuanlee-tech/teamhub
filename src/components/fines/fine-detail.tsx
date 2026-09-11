@@ -7,6 +7,7 @@ import { useCallback, useEffect, useRef } from "react";
 
 import { PaymentQrPanel } from "@/components/qr/payment-qr-panel";
 import { CurrencyText, DisplayHeading, Stamp } from "@/components/ui";
+import { useRefreshOnForeground } from "@/lib/client/use-refresh-on-foreground";
 import type { PaymentBank } from "@/lib/domain/payment";
 import { useOrganizationRealtime } from "@/lib/realtime/organization-events";
 
@@ -130,6 +131,8 @@ export function FineDetail({ fine, memberName, ownerUserId, organizationId, isMa
       onSnapshotReady: () => router.refresh(),
     },
   );
+
+  useRefreshOnForeground(fine.status === "unpaid" && fine.outstandingVnd > 0, () => router.refresh());
 
   const statusMeta: Record<string, { label: string; variant: "success" | "error" | "warning" | "muted" | "info" }> = {
     unpaid: { label: "Chưa trả", variant: "error" },

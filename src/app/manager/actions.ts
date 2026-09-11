@@ -5,7 +5,7 @@ import { fromZonedTime } from "date-fns-tz";
 import { z } from "zod";
 
 import { requireActiveMember } from "@/lib/auth";
-import { SEPAY_BANK_CODES } from "@/lib/banks";
+import { bankShortNameForCode, SEPAY_BANK_CODES } from "@/lib/banks";
 import { normalizeTransferText, validateDescriptionRule } from "@/lib/domain/payment";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { createClient } from "@/lib/supabase/server";
@@ -43,6 +43,7 @@ const attendanceSettingsSchema = z
 const bankSettingsSchema = z
   .object({
     bankCode: z.union([z.enum(SEPAY_BANK_CODES), z.literal("")]),
+    bankShortName: z.string().trim().max(40),
     bankAccountNumber: z.string().trim().max(19),
     bankAccountHolder: z.string().trim().max(100),
     transferDescriptionRule: z.string().trim().max(80),
@@ -239,6 +240,7 @@ export async function updateBankSettings(
 ): Promise<ManagerActionState> {
   const parsed = bankSettingsSchema.safeParse({
     bankCode: formData.get("bankCode"),
+    bankShortName: formData.get("bankShortName"),
     bankAccountNumber: formData.get("bankAccountNumber"),
     bankAccountHolder: formData.get("bankAccountHolder"),
     transferDescriptionRule: formData.get("transferDescriptionRule"),
@@ -259,6 +261,7 @@ export async function updateBankSettings(
     .from("organization_settings")
     .update({
       bank_code: parsed.data.bankCode || null,
+      bank_short_name: configured ? parsed.data.bankShortName || bankShortNameForCode(parsed.data.bankCode) : null,
       bank_account_number: configured ? parsed.data.bankAccountNumber : null,
       bank_account_holder: configured ? parsed.data.bankAccountHolder : null,
       transfer_description_rule: configured
